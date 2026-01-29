@@ -1,0 +1,92 @@
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Databases (keep structure, ignore data)
+*.db
+!schema.sql
+
+# Model artifacts (large files)
+*.pkl
+*.pickle
+*.joblib
+*.onnx
+models/
+
+# Vector store data
+vector_store/
+*.faiss
+*.index
+
+# Cache
+rag_cache.db
+.cache/
+
+# Output directories
+preprocessing_output/
+reports/
+
+# Secrets
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+secrets.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large data files
+*.csv
+*.parquet
+*.json
+!package.json
+!vite.config.js
+!ai_type_taxonomy.json
+!5star_master_table.json
+*.zip
+*.tar.gz
+*.gz
+
+# Use case raw data (large files)
+5_Star_UseCases/*/data/*/repo/
+5_Star_UseCases/*/*/data/*/output/
+4_Star_UseCases/
+
+# Keep structure files
+!enterprise_ai_mapping.csv
+!5star_master_table.csv

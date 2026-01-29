@@ -1,0 +1,29 @@
+satisfaction:
+  use_case_id: UC-FR-01
+  use_case_name: Real Time Fraud Risk Scoring
+  survey_period: 2025-Q1
+
+  customer_satisfaction:
+    nps:
+      before: 18
+      after: 60
+      change: +42
+    csat:
+      before: 72
+      after: 89
+      change: +17
+
+  employee_satisfaction:
+    enps:
+      before: 12
+      after: 50
+      change: +38
+    adoption_rate: 95
+
+  stakeholder_satisfaction:
+    business_owner: 4.5
+    data_science_team: 4.8
+    operations_team: 4.2
+    compliance_team: 4.6
+    risk_team: 4.5
+    scale: 1-5

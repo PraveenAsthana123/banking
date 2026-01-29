@@ -1,0 +1,442 @@
+# =============================================================================
+# Banking AI/ML Platform - Master Configuration
+# =============================================================================
+# Version: 1.0.0
+# Created: 2026-01-28
+# Compatible Python: 3.9, 3.10, 3.11, 3.12
+# Compatible Node.js: 18.x, 20.x, 22.x
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# PROJECT METADATA
+# -----------------------------------------------------------------------------
+project:
+  name: Banking AI/ML Platform
+  version: 1.0.0
+  description: Enterprise AI/ML governance platform for banking use cases
+  repository: https://github.com/PraveenAsthana123/banking.git
+  license: MIT
+  maintainers:
+    - name: Praveen Asthana
+      email: praveen.asthana@example.com
+
+# -----------------------------------------------------------------------------
+# DATA SOURCES
+# -----------------------------------------------------------------------------
+data_sources:
+  # Primary unified database containing all use case data
+  unified_database:
+    path: ./banking_unified.db
+    type: sqlite
+    size_estimate: 2.1GB
+    description: Consolidated database with all department use case data
+    tables:
+      - name: uc_*_transactions
+        description: Transaction data per use case
+      - name: uc_*_accounts
+        description: Account data per use case
+      - name: uc_*_alerts
+        description: Alert/fraud detection data
+      - name: metadata
+        description: Use case metadata and mappings
+
+  # ML pipeline results database
+  ml_results_database:
+    path: ./ml_pipeline_results.db
+    type: sqlite
+    size_estimate: 50KB
+    description: Stores ML model training results, metrics, and job history
+    tables:
+      - name: training_runs
+        description: Model training execution history
+      - name: model_metrics
+        description: Performance metrics per model
+      - name: model_artifacts
+        description: Paths to trained model files
+
+  # Preprocessing results database
+  preprocessing_database:
+    path: ./preprocessing_results.db
+    type: sqlite
+    size_estimate: 5MB
+    description: Data preprocessing pipeline results and statistics
+    tables:
+      - name: preprocessing_jobs
+        description: Preprocessing job execution logs
+      - name: data_quality_metrics
+        description: Data quality scores per dataset
+      - name: feature_statistics
+        description: Statistical summaries of features
+
+  # RAG cache database
+  rag_cache_database:
+    path: ./rag_cache.db
+    type: sqlite
+    size_estimate: 25KB
+    description: Caches RAG pipeline query results for performance
+
+  # Vector store for embeddings
+  vector_store:
+    path: ./vector_store/
+    type: faiss
+    size_estimate: variable
+    description: FAISS index for document embeddings (RAG)
+
+  # Use case data directories
+  use_case_directories:
+    5_star_use_cases:
+      path: ./5_Star_UseCases/
+      description: Production-ready use cases with complete data
+      departments:
+        - A_Core_Business_and_Revenue
+        - B_Risk_Fraud_and_Financial_Crime
+        - C_Operations_and_Cost_Optimization
+        - D_Data_Governance_and_Platform
+        - E_Technology_IT_and_Resilience
+        - F_ESG_Regulatory_and_Strategic
+        - G_Executive_and_Enterprise_Decisioning
+
+    4_star_use_cases:
+      path: ./4_Star_UseCases/
+      description: Use cases in validation phase
+
+  # Mapping files
+  mapping_files:
+    enterprise_ai_mapping:
+      path: ./5_Star_UseCases/enterprise_ai_mapping.csv
+      description: Master mapping of use cases to departments and AI types
+    ai_type_taxonomy:
+      path: ./5_Star_UseCases/ai_type_taxonomy.json
+      description: AI category taxonomy definitions
+    master_table:
+      path: ./5_Star_UseCases/5star_master_table.csv
+      description: Complete use case master table
+
+# -----------------------------------------------------------------------------
+# CONNECTION SETTINGS
+# -----------------------------------------------------------------------------
+connections:
+  # Database connections
+  database:
+    default_timeout: 30
+    wal_mode: true
+    connection_pool_size: 5
+    retry_attempts: 3
+    retry_delay_seconds: 1
+
+  # LLM/Ollama connection
+  ollama:
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+    model: ${OLLAMA_MODEL:-llama3.2}
+    timeout: 120
+    retry_attempts: 3
+
+  # API Server
+  api_server:
+    host: 0.0.0.0
+    port: ${API_PORT:-5000}
+    debug: ${DEBUG:-false}
+    cors_origins:
+      - http://localhost:3000
+      - http://localhost:5173
+
+  # Frontend development server
+  frontend:
+    host: localhost
+    port: 5173
+    api_proxy: http://localhost:5000
+
+# -----------------------------------------------------------------------------
+# TECH STACK
+# -----------------------------------------------------------------------------
+tech_stack:
+  backend:
+    language: Python
+    version: ">=3.9,<4.0"
+    framework: Flask
+    orm: SQLite3 (native)
+    dependencies:
+      core_ml:
+        - numpy: ">=1.21.0,<2.0.0"
+        - pandas: ">=1.5.0,<3.0.0"
+        - scikit-learn: ">=1.0.0,<2.0.0"
+        - scipy: ">=1.7.0,<2.0.0"
+      explainability:
+        - shap: ">=0.41.0,<1.0.0"
+        - lime: ">=0.2.0,<1.0.0"
+      model_export:
+        - skl2onnx: ">=1.14.0,<2.0.0"
+        - onnxruntime: ">=1.14.0,<2.0.0"
+      rag_pipeline:
+        - sentence-transformers: ">=2.2.0,<3.0.0"
+        - faiss-cpu: ">=1.7.0,<2.0.0"
+        - chromadb: ">=0.4.0,<1.0.0"
+        - tiktoken: ">=0.5.0,<1.0.0"
+        - nltk: ">=3.8.0,<4.0.0"
+      api:
+        - flask: ">=2.3.0,<4.0.0"
+        - flask-cors: ">=4.0.0,<5.0.0"
+      visualization:
+        - matplotlib: ">=3.5.0,<4.0.0"
+        - seaborn: ">=0.12.0,<1.0.0"
+      testing:
+        - pytest: ">=7.0.0,<9.0.0"
+        - pytest-cov: ">=4.0.0,<6.0.0"
+
+  frontend:
+    language: JavaScript/JSX
+    framework: React
+    version: "^18.2.0"
+    build_tool: Vite
+    vite_version: "^5.0.0"
+    dependencies:
+      - react: "^18.2.0"
+      - react-dom: "^18.2.0"
+      - react-router-dom: "^6.20.0"
+      - recharts: "^2.10.0"
+
+  database:
+    primary: SQLite
+    version: "3.x"
+    features:
+      - WAL mode for concurrent access
+      - JSON1 extension for JSON queries
+      - FTS5 for full-text search
+
+  vector_database:
+    primary: FAISS
+    alternative: ChromaDB
+
+  llm_integration:
+    provider: Ollama
+    models:
+      - llama3.2
+      - mistral
+      - codellama
+
+# -----------------------------------------------------------------------------
+# BACKWARD & FORWARD COMPATIBILITY
+# -----------------------------------------------------------------------------
+compatibility:
+  # Database schema versioning
+  database_schema:
+    current_version: 1
+    min_supported_version: 1
+    migration_path: ./migrations/
+    auto_migrate: true
+
+  # API versioning
+  api:
+    current_version: v1
+    supported_versions:
+      - v1
+    deprecation_policy: "Versions deprecated with 6-month notice"
+
+  # Data format compatibility
+  data_formats:
+    csv:
+      encoding: utf-8
+      delimiter: ","
+      quoting: minimal
+    json:
+      encoding: utf-8
+      indent: 2
+    yaml:
+      version: "1.1"
+
+  # Model compatibility
+  models:
+    scikit_learn:
+      min_version: "1.0.0"
+      max_version: "2.0.0"
+      serialization: joblib
+    onnx:
+      opset_version: 17
+
+  # Python version matrix
+  python_compatibility:
+    tested_versions:
+      - "3.9"
+      - "3.10"
+      - "3.11"
+      - "3.12"
+    min_version: "3.9"
+    max_version: "3.12"
+
+  # Node.js version matrix
+  nodejs_compatibility:
+    tested_versions:
+      - "18"
+      - "20"
+      - "22"
+    min_version: "18"
+
+  # Breaking changes log
+  breaking_changes:
+    - version: "1.0.0"
+      date: "2026-01-28"
+      changes:
+        - "Initial release"
+
+# -----------------------------------------------------------------------------
+# PROCESSING CONFIGURATION
+# -----------------------------------------------------------------------------
+processing:
+  # Data processing limits
+  limits:
+    sample_limit: ${SAMPLE_LIMIT:-500000}
+    max_workers: ${MAX_WORKERS:-8}
+    batch_size: 10000
+    memory_limit_mb: 4096
+
+  # Output directories
+  output:
+    preprocessing: ./preprocessing_output/
+    models: ./models/
+    reports: ./reports/
+    logs: ./logs/
+
+  # Logging configuration
+  logging:
+    level: ${LOG_LEVEL:-INFO}
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    max_file_size_mb: 10
+    backup_count: 5
+
+# -----------------------------------------------------------------------------
+# SECURITY CONFIGURATION
+# -----------------------------------------------------------------------------
+security:
+  # Input validation
+  validation:
+    max_use_case_key_length: 64
+    allowed_table_name_pattern: "^[a-zA-Z][a-zA-Z0-9_]*$"
+    max_query_length: 10000
+
+  # Secrets management
+  secrets:
+    env_file: .env
+    required_vars: []
+    optional_vars:
+      - OLLAMA_BASE_URL
+      - OLLAMA_MODEL
+      - API_PORT
+      - DEBUG
+      - LOG_LEVEL
+
+  # CORS configuration
+  cors:
+    allowed_origins:
+      - http://localhost:3000
+      - http://localhost:5173
+    allowed_methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+    allowed_headers:
+      - Content-Type
+      - Authorization
+
+# -----------------------------------------------------------------------------
+# DEPARTMENT CONFIGURATION
+# -----------------------------------------------------------------------------
+departments:
+  risk_and_fraud:
+    code: B
+    name: Risk, Fraud and Financial Crime
+    subdepartments:
+      - id: "01"
+        name: Fraud_Management
+        use_cases: 5
+      - id: "02"
+        name: Credit_Risk_Lending
+        use_cases: 5
+      - id: "03"
+        name: AML_Financial_Crime
+        use_cases: 5
+      - id: "04"
+        name: Collections_Recovery
+        use_cases: 5
+
+  operations:
+    code: C
+    name: Operations and Cost Optimization
+    subdepartments:
+      - id: "05"
+        name: Contact_Center
+        use_cases: 5
+      - id: "06"
+        name: Branch_Operations
+        use_cases: 5
+      - id: "07"
+        name: ATM_Cash_Operations
+        use_cases: 5
+      - id: "12"
+        name: Workforce_HR_Management
+        use_cases: 3
+
+  governance:
+    code: D
+    name: Data Governance and Platform
+    subdepartments:
+      - id: "13"
+        name: Data_AI_Governance
+        use_cases: 3
+
+  executive:
+    code: G
+    name: Executive and Enterprise Decisioning
+    subdepartments:
+      - id: "08"
+        name: Treasury_Finance
+        use_cases: 5
+      - id: "14"
+        name: Strategy_Transformation_Office
+        use_cases: 3
+
+# -----------------------------------------------------------------------------
+# AI CATEGORY TAXONOMY
+# -----------------------------------------------------------------------------
+ai_categories:
+  - id: 1
+    name: Business_AI
+    description: Strategic business intelligence and decision support
+  - id: 2
+    name: Decision_Intelligence_AI
+    description: Automated decision-making systems
+  - id: 3
+    name: Analytic_AI
+    description: Advanced analytics and predictive modeling
+  - id: 4
+    name: Transactional_Assistive_AI
+    description: Transaction processing assistance
+  - id: 5
+    name: Operational_AI
+    description: Operations optimization and automation
+  - id: 6
+    name: Autonomous_AI
+    description: Self-operating AI systems
+  - id: 7
+    name: Governance_Control_AI
+    description: Compliance and governance automation
+
+# -----------------------------------------------------------------------------
+# VALUE DRIVERS
+# -----------------------------------------------------------------------------
+value_drivers:
+  - id: A
+    name: Revenue_Growth
+    description: Revenue generation and growth initiatives
+  - id: B
+    name: Cost_Reduction_OPEX_Optimization
+    description: Cost reduction and operational efficiency
+  - id: C
+    name: Productivity_Speed
+    description: Productivity and speed improvements
+  - id: D
+    name: Decision_Intelligence
+    description: Enhanced decision-making capabilities
+  - id: E
+    name: Visibility_Control_Governance
+    description: Visibility, control, and governance improvements

@@ -1,0 +1,11 @@
+5-Star,Department,Value Driver,AI Category,Use Case ID,Use Case Name,ML,DL,CV,NLP,RAG,Hybrid,Revenue Impact,Cost Reduction,Productivity Gain,Decision Quality,Visibility & Control,Maturity
+5-Star,Strategy / Board Office,Revenue Growth,Business AI,UC-31-01,Strategy Scenario Simulator,✔,✔,—,—,—,✔,High,Medium,Medium,Very High,High,Pilot → Prod
+5-Star,Treasury & Finance,Decision Intelligence,Business AI,UC-32-02,Capital Allocation Optimizer,✔,✔,—,—,—,✔,High,Medium,Low,Very High,High,Pilot → Prod
+5-Star,Dispute & Chargeback,Cost Reduction / OPEX,Decision Intelligence AI,UC-15-01,Chargeback Decision Optimizer,✔,—,—,—,—,✔,Medium,High,Medium,High,Medium,Production
+5-Star,Fraud Management,Revenue Growth,Analytic AI,UC-06-01,Real-Time Fraud Risk Scoring,✔,✔,—,—,—,✔,Very High,Medium,Low,High,Medium,Production
+5-Star,Contact Center,Productivity & Speed,Analytic AI,UC-12-01,Call Volume Forecasting,✔,✔,—,✔,—,—,Medium,Medium,High,Medium,Low,Production
+5-Star,Enterprise Risk,Visibility Control & Governance,Analytic AI,UC-34-01,Risk Exposure Monitoring,✔,✔,—,✔,—,—,Low,Low,Medium,High,Very High,Production
+5-Star,Fraud Management,Productivity & Speed,Transactional / Assistive AI,UC-06-05,Fraud Investigation Copilot,—,—,—,✔,✔,✔,Medium,Medium,Very High,Medium,Medium,Production
+5-Star,Credit Risk & Lending,Decision Intelligence,Transactional / Assistive AI,UC-07-05,Underwriter Assist,—,—,—,✔,✔,✔,Medium,Medium,High,High,Medium,Production
+5-Star,ATM Cash Operations,Cost Reduction / OPEX,Operational AI,UC-13-01,Cash Replenishment Optimization,✔,✔,✔,—,—,—,Low,Very High,Medium,Medium,Medium,Production
+5-Star,Model Risk Management,Visibility Control & Governance,Governance & Control AI,UC-10-01,Model Drift & Bias Monitoring,✔,—,—,—,—,✔,Low,Medium,Medium,Very High,Very High,Production

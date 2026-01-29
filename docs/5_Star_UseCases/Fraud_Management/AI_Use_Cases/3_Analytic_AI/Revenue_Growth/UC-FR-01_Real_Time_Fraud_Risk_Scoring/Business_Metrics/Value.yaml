@@ -1,0 +1,33 @@
+value:
+  use_case_id: UC-FR-01
+  use_case_name: Real Time Fraud Risk Scoring
+  assessment_date: 2025-01-28
+
+  financial_impact:
+    annual_cost_savings: 4200000
+    annual_revenue_impact: 2800000
+    fraud_losses_prevented: 15000000
+    total_annual_value: 23500000
+    currency: USD
+
+  operational_impact:
+    fte_reduction: 12
+    processing_time_reduction_percent: 99.5
+    error_rate_reduction_percent: 94.0
+    throughput_increase_factor: 250
+
+  strategic_value:
+    competitive_advantage: high
+    customer_experience_impact: positive
+    regulatory_compliance: exceeded
+    risk_reduction: substantial
+
+  business_outcomes:
+    before_ai:
+      decision_time: "2-3 days"
+      fraud_detection_rate: "72%"
+      false_positive_rate: "8.5%"
+    after_ai:
+      decision_time: "< 50ms"
+      fraud_detection_rate: "97.3%"
+      false_positive_rate: "2.1%"

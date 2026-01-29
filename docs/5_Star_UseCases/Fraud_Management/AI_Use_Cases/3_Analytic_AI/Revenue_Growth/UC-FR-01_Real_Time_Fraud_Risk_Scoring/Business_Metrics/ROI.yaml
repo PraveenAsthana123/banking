@@ -1,0 +1,37 @@
+roi:
+  use_case_id: UC-FR-01
+  use_case_name: Real Time Fraud Risk Scoring
+  department: Fraud_Management
+  ai_category: Analytic_AI
+  value_driver: Revenue_Growth
+
+  investment:
+    development_cost: 500000
+    infrastructure_cost: 200000
+    data_preparation: 150000
+    testing_validation: 100000
+    deployment_integration: 75000
+    total_initial: 1025000
+    maintenance_annual: 180000
+    training_annual: 25000
+
+  returns:
+    fraud_loss_prevention_annual: 15000000
+    operational_cost_savings_annual: 2100000
+    revenue_protection_annual: 1500000
+    compliance_penalty_avoidance: 500000
+    total_annual_benefit: 19100000
+
+  calculated_metrics:
+    roi_percentage: 1764
+    payback_period_months: 0.6
+    npv_3year: 52000000
+    irr_percentage: 450
+    break_even_month: 1
+
+  assumptions:
+    fraud_rate_baseline: 0.35
+    fraud_rate_with_ai: 0.08
+    average_transaction_value: 450
+    daily_transactions: 125000
+    model_accuracy: 94.2
