@@ -1,13 +1,17 @@
 import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Icon } from './Icons';
-import { departments } from '../data/departments';
 import { useRole, roles } from '../context/RoleContext';
+import { folderStructure, aiCategories, valueDrivers } from '../data/folderStructure';
 
 const Sidebar = ({ collapsed, onToggle }) => {
   const location = useLocation();
   const { currentRole, switchRole } = useRole();
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState({});
+  const [expandedDepts, setExpandedDepts] = useState({});
+  const [expandedAI, setExpandedAI] = useState({});
+  const [expandedValue, setExpandedValue] = useState({});
 
   const mainNavItems = [
     { path: '/', icon: 'dashboard', label: 'Dashboard' },
@@ -16,13 +20,23 @@ const Sidebar = ({ collapsed, onToggle }) => {
     { path: '/models', icon: 'models', label: 'Models' },
     { path: '/pipelines', icon: 'pipelines', label: 'Pipelines' },
     { path: '/governance', icon: 'governance', label: 'AI Governance' },
-    { path: '/reports', icon: 'clipboard-check', label: 'Reports' },
-    { path: '/ai-impact', icon: 'trending-up', label: 'AI Impact' },
-    { path: '/data-analysis', icon: 'chart', label: 'Data Analysis' },
-    { path: '/model-analysis', icon: 'analytics', label: 'Model Analysis' },
-    { path: '/stakeholder-reports', icon: 'file', label: 'Stakeholder Reports' },
-    { path: '/demo-scenarios', icon: 'play', label: 'Demo Scenarios' },
   ];
+
+  const toggleGroup = (groupId) => {
+    setExpandedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
+  };
+
+  const toggleDept = (deptKey) => {
+    setExpandedDepts(prev => ({ ...prev, [deptKey]: !prev[deptKey] }));
+  };
+
+  const toggleAI = (aiKey) => {
+    setExpandedAI(prev => ({ ...prev, [aiKey]: !prev[aiKey] }));
+  };
+
+  const toggleValue = (valueKey) => {
+    setExpandedValue(prev => ({ ...prev, [valueKey]: !prev[valueKey] }));
+  };
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -36,8 +50,9 @@ const Sidebar = ({ collapsed, onToggle }) => {
       </button>
 
       <nav className="sidebar-nav">
+        {/* Main Navigation */}
         <div className="nav-section">
-          <div className="nav-section-title">{collapsed ? '—' : 'Main'}</div>
+          <div className="nav-section-title">{collapsed ? '' : 'Main'}</div>
           {mainNavItems.map((item) => (
             <NavLink
               key={item.path}
@@ -54,33 +69,113 @@ const Sidebar = ({ collapsed, onToggle }) => {
           ))}
         </div>
 
+        {/* Department Groups - Folder Structure */}
         <div className="nav-section">
-          <div className="nav-section-title">{collapsed ? '—' : 'Departments'}</div>
-          {departments.map((dept) => {
-            const isActive = location.pathname.startsWith(`/department/${dept.id}`);
-            const activeCount = dept.useCases.filter((uc) => uc.status === 'active').length;
+          <div className="nav-section-title">{collapsed ? '' : '5-Star Use Cases'}</div>
 
-            return (
-              <NavLink
-                key={dept.id}
-                to={`/department/${dept.id}`}
-                className={`nav-item ${isActive ? 'active' : ''}`}
+          {folderStructure.map((group) => (
+            <div key={group.id} className="nav-group">
+              {/* Group Header (A, B, C, etc.) */}
+              <button
+                className={`nav-group-header ${expandedGroups[group.id] ? 'expanded' : ''}`}
+                onClick={() => toggleGroup(group.id)}
+                style={{ '--group-color': group.color }}
               >
-                <span className={`dept-indicator ${dept.id}`} />
+                <span className="group-indicator" style={{ backgroundColor: group.color }} />
                 <span className="nav-icon">
-                  <Icon name={dept.icon} />
+                  <Icon name={group.icon} />
                 </span>
-                <span className="nav-label">{dept.name}</span>
-                {activeCount > 0 && (
-                  <span className="nav-badge">{activeCount}</span>
-                )}
-              </NavLink>
-            );
-          })}
+                <span className="nav-label">{group.code}. {group.name}</span>
+                <Icon name={expandedGroups[group.id] ? 'chevronDown' : 'chevronRight'} size={12} />
+              </button>
+
+              {/* Subdepartments */}
+              {expandedGroups[group.id] && (
+                <div className="nav-group-content">
+                  {group.subdepartments.map((dept) => {
+                    const deptKey = `${group.id}-${dept.id}`;
+                    return (
+                      <div key={deptKey} className="nav-dept">
+                        {/* Department Header */}
+                        <button
+                          className={`nav-dept-header ${expandedDepts[deptKey] ? 'expanded' : ''}`}
+                          onClick={() => toggleDept(deptKey)}
+                        >
+                          <span className="nav-icon">
+                            <Icon name={dept.icon} size={14} />
+                          </span>
+                          <span className="nav-label">{dept.id}. {dept.name}</span>
+                          <span className="nav-badge">{dept.useCases}</span>
+                          <Icon name={expandedDepts[deptKey] ? 'chevronDown' : 'chevronRight'} size={10} />
+                        </button>
+
+                        {/* AI Categories under Department */}
+                        {expandedDepts[deptKey] && (
+                          <div className="nav-dept-content">
+                            <div className="nav-folder">
+                              <span className="folder-icon">
+                                <Icon name="folder" size={12} />
+                              </span>
+                              <span className="folder-label">AI_Use_Cases</span>
+                            </div>
+
+                            {aiCategories.map((ai) => {
+                              const aiKey = `${deptKey}-${ai.id}`;
+                              return (
+                                <div key={aiKey} className="nav-ai-category">
+                                  <button
+                                    className={`nav-ai-header ${expandedAI[aiKey] ? 'expanded' : ''}`}
+                                    onClick={() => toggleAI(aiKey)}
+                                  >
+                                    <span className="ai-indicator" style={{ backgroundColor: ai.color }} />
+                                    <span className="nav-label">{ai.id}. {ai.name}</span>
+                                    <Icon name={expandedAI[aiKey] ? 'chevronDown' : 'chevronRight'} size={10} />
+                                  </button>
+
+                                  {/* Value Drivers under AI Category */}
+                                  {expandedAI[aiKey] && (
+                                    <div className="nav-ai-content">
+                                      {valueDrivers.map((value) => {
+                                        const valueKey = `${aiKey}-${value.id}`;
+                                        return (
+                                          <NavLink
+                                            key={valueKey}
+                                            to={`/use-case/${group.id}/${dept.id}/${ai.id}/${value.id}`}
+                                            className="nav-value-driver"
+                                          >
+                                            <span className="value-indicator" style={{ backgroundColor: value.color }} />
+                                            <span className="nav-label">{value.name}</span>
+                                          </NavLink>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
 
+        {/* System Section */}
         <div className="nav-section">
-          <div className="nav-section-title">{collapsed ? '—' : 'System'}</div>
+          <div className="nav-section-title">{collapsed ? '' : 'System'}</div>
+          <NavLink
+            to="/reports"
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+          >
+            <span className="nav-icon">
+              <Icon name="file" />
+            </span>
+            <span className="nav-label">Reports</span>
+          </NavLink>
           <NavLink
             to="/settings"
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
@@ -93,6 +188,7 @@ const Sidebar = ({ collapsed, onToggle }) => {
         </div>
       </nav>
 
+      {/* Role Switcher Footer */}
       <div className="sidebar-footer">
         <div className="role-switcher">
           <button
