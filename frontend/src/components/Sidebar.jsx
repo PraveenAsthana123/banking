@@ -2,16 +2,31 @@ import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Icon } from './Icons';
 import { useRole, roles } from '../context/RoleContext';
-import { folderStructure, aiCategories, valueDrivers } from '../data/folderStructure';
+import { totalPipelineUseCases, aiTypeSummary, ucsByAiType, pipelineUseCases, groupMeta } from '../data/pipelineUseCases';
 
 const Sidebar = ({ collapsed, onToggle }) => {
   const location = useLocation();
   const { currentRole, switchRole } = useRole();
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState({});
-  const [expandedDepts, setExpandedDepts] = useState({});
-  const [expandedAI, setExpandedAI] = useState({});
-  const [expandedValue, setExpandedValue] = useState({});
+  const [expandedPipeline, setExpandedPipeline] = useState(false);
+  const [expandedPipelineGroup, setExpandedPipelineGroup] = useState({});
+  const [expandedPipelineDept, setExpandedPipelineDept] = useState({});
+  const [expandedPipelineDriver, setExpandedPipelineDriver] = useState({});
+
+  // Build pipeline nav tree: Group > Department > Value Driver > Use Cases
+  const pipelineTree = React.useMemo(() => {
+    const tree = {};
+    pipelineUseCases.forEach(uc => {
+      const g = uc.group || 'LEGACY';
+      if (!tree[g]) tree[g] = { meta: groupMeta[g] || { name: g, color: '#6b7280', count: 0 }, departments: {} };
+      const d = uc.department || 'General';
+      if (!tree[g].departments[d]) tree[g].departments[d] = { drivers: {} };
+      const v = uc.valueDriver || 'General';
+      if (!tree[g].departments[d].drivers[v]) tree[g].departments[d].drivers[v] = [];
+      tree[g].departments[d].drivers[v].push(uc);
+    });
+    return tree;
+  }, []);
 
   const mainNavItems = [
     { path: '/', icon: 'dashboard', label: 'Dashboard' },
@@ -20,23 +35,9 @@ const Sidebar = ({ collapsed, onToggle }) => {
     { path: '/models', icon: 'models', label: 'Models' },
     { path: '/pipelines', icon: 'pipelines', label: 'Pipelines' },
     { path: '/governance', icon: 'governance', label: 'AI Governance' },
+    { path: '/admin', icon: 'settings', label: 'Admin' },
   ];
 
-  const toggleGroup = (groupId) => {
-    setExpandedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
-  };
-
-  const toggleDept = (deptKey) => {
-    setExpandedDepts(prev => ({ ...prev, [deptKey]: !prev[deptKey] }));
-  };
-
-  const toggleAI = (aiKey) => {
-    setExpandedAI(prev => ({ ...prev, [aiKey]: !prev[aiKey] }));
-  };
-
-  const toggleValue = (valueKey) => {
-    setExpandedValue(prev => ({ ...prev, [valueKey]: !prev[valueKey] }));
-  };
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -69,99 +70,104 @@ const Sidebar = ({ collapsed, onToggle }) => {
           ))}
         </div>
 
-        {/* Department Groups - Folder Structure */}
+
+        {/* Pipeline Use Cases Section - Group > Department > Value Driver > UC */}
         <div className="nav-section">
-          <div className="nav-section-title">{collapsed ? '' : '5-Star Use Cases'}</div>
+          <div className="nav-section-title">{collapsed ? '' : `Use Cases (${totalPipelineUseCases})`}</div>
 
-          {folderStructure.map((group) => (
-            <div key={group.id} className="nav-group">
-              {/* Group Header (A, B, C, etc.) */}
-              <button
-                className={`nav-group-header ${expandedGroups[group.id] ? 'expanded' : ''}`}
-                onClick={() => toggleGroup(group.id)}
-                style={{ '--group-color': group.color }}
-              >
-                <span className="group-indicator" style={{ backgroundColor: group.color }} />
-                <span className="nav-icon">
-                  <Icon name={group.icon} />
-                </span>
-                <span className="nav-label">{group.code}. {group.name}</span>
-                <Icon name={expandedGroups[group.id] ? 'chevronDown' : 'chevronRight'} size={12} />
-              </button>
+          {Object.entries(pipelineTree).map(([groupCode, groupData]) => {
+            const gKey = `pg-${groupCode}`;
+            const gMeta = groupData.meta;
+            const deptEntries = Object.entries(groupData.departments).sort(([a], [b]) => a.localeCompare(b));
+            const groupUcCount = deptEntries.reduce((sum, [, dept]) =>
+              sum + Object.values(dept.drivers).reduce((s, ucs) => s + ucs.length, 0), 0);
 
-              {/* Subdepartments */}
-              {expandedGroups[group.id] && (
-                <div className="nav-group-content">
-                  {group.subdepartments.map((dept) => {
-                    const deptKey = `${group.id}-${dept.id}`;
-                    return (
-                      <div key={deptKey} className="nav-dept">
-                        {/* Department Header */}
-                        <button
-                          className={`nav-dept-header ${expandedDepts[deptKey] ? 'expanded' : ''}`}
-                          onClick={() => toggleDept(deptKey)}
-                        >
-                          <span className="nav-icon">
-                            <Icon name={dept.icon} size={14} />
-                          </span>
-                          <span className="nav-label">{dept.id}. {dept.name}</span>
-                          <span className="nav-badge">{dept.useCases}</span>
-                          <Icon name={expandedDepts[deptKey] ? 'chevronDown' : 'chevronRight'} size={10} />
-                        </button>
+            return (
+              <div key={gKey} className="nav-group">
+                {/* Group Header */}
+                <button
+                  className={`nav-group-header ${expandedPipelineGroup[gKey] ? 'expanded' : ''}`}
+                  onClick={() => setExpandedPipelineGroup(prev => ({ ...prev, [gKey]: !prev[gKey] }))}
+                  style={{ '--group-color': gMeta.color }}
+                >
+                  <span className="group-indicator" style={{ backgroundColor: gMeta.color }} />
+                  <span className="nav-icon"><Icon name="folder" /></span>
+                  <span className="nav-label">{groupCode === 'LEGACY' ? 'Legacy' : groupCode}. {gMeta.name}</span>
+                  <span className="nav-badge" style={{ fontSize: '11px' }}>{groupUcCount}</span>
+                  <Icon name={expandedPipelineGroup[gKey] ? 'chevronDown' : 'chevronRight'} size={12} />
+                </button>
 
-                        {/* AI Categories under Department */}
-                        {expandedDepts[deptKey] && (
-                          <div className="nav-dept-content">
-                            <div className="nav-folder">
-                              <span className="folder-icon">
-                                <Icon name="folder" size={12} />
-                              </span>
-                              <span className="folder-label">AI_Use_Cases</span>
-                            </div>
+                {/* Departments */}
+                {expandedPipelineGroup[gKey] && (
+                  <div className="nav-group-content">
+                    {deptEntries.map(([deptName, deptData]) => {
+                      const dKey = `${gKey}-${deptName}`;
+                      const driverEntries = Object.entries(deptData.drivers);
+                      const deptUcCount = driverEntries.reduce((s, [, ucs]) => s + ucs.length, 0);
 
-                            {aiCategories.map((ai) => {
-                              const aiKey = `${deptKey}-${ai.id}`;
-                              return (
-                                <div key={aiKey} className="nav-ai-category">
-                                  <button
-                                    className={`nav-ai-header ${expandedAI[aiKey] ? 'expanded' : ''}`}
-                                    onClick={() => toggleAI(aiKey)}
-                                  >
-                                    <span className="ai-indicator" style={{ backgroundColor: ai.color }} />
-                                    <span className="nav-label">{ai.id}. {ai.name}</span>
-                                    <Icon name={expandedAI[aiKey] ? 'chevronDown' : 'chevronRight'} size={10} />
-                                  </button>
+                      return (
+                        <div key={dKey} className="nav-dept">
+                          {/* Department Header */}
+                          <button
+                            className={`nav-dept-header ${expandedPipelineDept[dKey] ? 'expanded' : ''}`}
+                            onClick={() => setExpandedPipelineDept(prev => ({ ...prev, [dKey]: !prev[dKey] }))}
+                          >
+                            <span className="nav-icon"><Icon name="building" size={14} /></span>
+                            <span className="nav-label">{deptName}</span>
+                            <span className="nav-badge">{deptUcCount}</span>
+                            <Icon name={expandedPipelineDept[dKey] ? 'chevronDown' : 'chevronRight'} size={10} />
+                          </button>
 
-                                  {/* Value Drivers under AI Category */}
-                                  {expandedAI[aiKey] && (
-                                    <div className="nav-ai-content">
-                                      {valueDrivers.map((value) => {
-                                        const valueKey = `${aiKey}-${value.id}`;
-                                        return (
+                          {/* Value Drivers */}
+                          {expandedPipelineDept[dKey] && (
+                            <div className="nav-dept-content">
+                              {driverEntries.map(([driverName, ucs]) => {
+                                const vKey = `${dKey}-${driverName}`;
+                                return (
+                                  <div key={vKey} className="nav-ai-category">
+                                    <button
+                                      className={`nav-ai-header ${expandedPipelineDriver[vKey] ? 'expanded' : ''}`}
+                                      onClick={() => setExpandedPipelineDriver(prev => ({ ...prev, [vKey]: !prev[vKey] }))}
+                                    >
+                                      <span className="ai-indicator" style={{ backgroundColor: gMeta.color }} />
+                                      <span className="nav-label">{driverName || 'General'}</span>
+                                      <span className="nav-badge" style={{ fontSize: '11px' }}>{ucs.length}</span>
+                                      <Icon name={expandedPipelineDriver[vKey] ? 'chevronDown' : 'chevronRight'} size={10} />
+                                    </button>
+
+                                    {/* Use Cases */}
+                                    {expandedPipelineDriver[vKey] && (
+                                      <div className="nav-ai-content" style={{ maxHeight: '250px', overflowY: 'auto' }}>
+                                        {ucs.map(uc => (
                                           <NavLink
-                                            key={valueKey}
-                                            to={`/use-case/${group.id}/${dept.id}/${ai.id}/${value.id}`}
+                                            key={uc.ucId}
+                                            to={`/pipeline/${uc.ucId}`}
                                             className="nav-value-driver"
                                           >
-                                            <span className="value-indicator" style={{ backgroundColor: value.color }} />
-                                            <span className="nav-label">{value.name}</span>
+                                            <span style={{
+                                              width: '6px', height: '6px', borderRadius: '50%',
+                                              backgroundColor: uc.aiTypeColor, flexShrink: 0
+                                            }} />
+                                            <span className="nav-label">
+                                              {uc.ucId}: {uc.name}
+                                            </span>
                                           </NavLink>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         {/* System Section */}

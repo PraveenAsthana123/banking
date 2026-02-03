@@ -17,6 +17,7 @@ import Settings from './pages/Settings';
 import DemoScenarios from './pages/DemoScenarios';
 import AIAssistant from './pages/AIAssistant';
 import ModelAnalysis from './pages/ModelAnalysis';
+import Admin from './pages/Admin';
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -33,6 +34,8 @@ function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/department/:deptId" element={<Department />} />
           <Route path="/department/:deptId/:useCaseId" element={<UseCase />} />
+          <Route path="/use-case/:groupId/:deptId/:aiId/:valueId" element={<UseCase />} />
+          <Route path="/pipeline/:ucId" element={<UseCase />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/models" element={<Models />} />
           <Route path="/pipelines" element={<Pipelines />} />
@@ -49,6 +52,7 @@ function App() {
           <Route path="/ai-assistant" element={<AIAssistant />} />
           <Route path="/model-analysis" element={<ModelAnalysis />} />
           <Route path="/model-analysis/:useCaseId" element={<ModelAnalysis />} />
+          <Route path="/admin" element={<Admin />} />
         </Routes>
       </main>
     </div>

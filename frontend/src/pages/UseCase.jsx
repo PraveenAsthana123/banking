@@ -1,7 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Icon } from '../components/Icons';
 import { departments, getStatusColor, getStatusLabel, getAiCategory, getDataCategory } from '../data/departments';
+import { folderStructure, aiCategories, valueDrivers, departmentUseCases, getUseCasesForDepartment } from '../data/folderStructure';
+import { ucById } from '../data/pipelineUseCases';
+import ScenarioView from '../components/ScenarioView';
+import DataImbalanceAnalysis from '../components/DataImbalanceAnalysis';
+import FeatureEngineering from '../components/FeatureEngineering';
+import ModelRobustnessPanel from '../components/ModelRobustnessPanel';
+import OperationalIntelligence from '../components/OperationalIntelligence';
+import CoverageSegmentation from '../components/CoverageSegmentation';
+import GovernanceCompliance from '../components/GovernanceCompliance';
+import { discoverDataset } from '../services/adminApi';
+import '../styles/scenarios.css';
+import '../styles/ai-types.css';
 import {
   LineChart,
   Line,
@@ -9,6 +21,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
   AreaChart,
   Area,
@@ -20,7 +33,10 @@ import {
 } from 'recharts';
 
 const UseCase = () => {
-  const { deptId, useCaseId } = useParams();
+  const { deptId, useCaseId, groupId, aiId, valueId, ucId } = useParams();
+
+  // Pipeline use case lookup (for /pipeline/:ucId route)
+  const pipelineUc = ucId ? ucById[ucId] : null;
   const [activeTab, setActiveTab] = useState('overview');
   const [runningJobs, setRunningJobs] = useState({});
   const [notification, setNotification] = useState(null);
@@ -30,9 +46,195 @@ const UseCase = () => {
   const [showModelModal, setShowModelModal] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [showTransactionModal, setShowTransactionModal] = useState(false);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simulationData, setSimulationData] = useState([]);
+  const [showSimulationModal, setShowSimulationModal] = useState(false);
+  const [isLoadingDemo, setIsLoadingDemo] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
+  const [isPresentationMode, setIsPresentationMode] = useState(false);
+  const [processRunning, setProcessRunning] = useState(false);
+  const [processJobId, setProcessJobId] = useState(null);
+  const [processProgress, setProcessProgress] = useState(0);
+  const [processStatus, setProcessStatus] = useState('idle'); // idle, running, completed, failed
+  const [dataPathInfo, setDataPathInfo] = useState(null);
+  const [dataPathLoading, setDataPathLoading] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [automationRunning, setAutomationRunning] = useState(false);
+  const [automationJobId, setAutomationJobId] = useState(null);
+  const [automationProgress, setAutomationProgress] = useState(0);
+  const [automationStatus, setAutomationStatus] = useState('idle');
+  const [pipelineResults, setPipelineResults] = useState(null);
+  const [portfolioData, setPortfolioData] = useState(null);
+  const [comparisonData, setComparisonData] = useState(null);
+  const [businessCase, setBusinessCase] = useState(null);
+  const [regulatoryData, setRegulatoryData] = useState(null);
+  const [datasetId, setDatasetId] = useState(null);
 
-  const department = departments.find((d) => d.id === deptId);
-  const useCase = department?.useCases.find((uc) => uc.id === useCaseId);
+  // Sub-tab state for unified tabs
+  const [aiSubTab, setAiSubTab] = useState('trust');
+  const [monitorSubTab, setMonitorSubTab] = useState('jobs');
+  const [demoSubTab, setDemoSubTab] = useState('simulation');
+  const [archSubTab, setArchSubTab] = useState('runbook');
+  const [testSubTab, setTestSubTab] = useState('testing');
+
+  // Refresh mechanism
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(new Date());
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(30); // seconds
+
+  // Advanced button state management
+  const [buttonStates, setButtonStates] = useState({});
+
+  // Set button loading state
+  const setButtonLoading = (buttonId, isLoading) => {
+    setButtonStates(prev => ({ ...prev, [buttonId]: isLoading }));
+  };
+
+  // Check if button is loading
+  const isButtonLoading = (buttonId) => buttonStates[buttonId] || false;
+
+  // Advanced action handler with loading state
+  const handleAction = (buttonId, action, message, duration = 2000) => {
+    setButtonLoading(buttonId, true);
+    setNotification({ type: 'info', message: `${message}...` });
+    setTimeout(() => {
+      setButtonLoading(buttonId, false);
+      setNotification({ type: 'success', message: `${action} completed successfully!` });
+      setTimeout(() => setNotification(null), 3000);
+    }, duration);
+  };
+
+  // Button style helper
+  const getButtonStyle = (buttonId, baseStyle = {}) => ({
+    ...baseStyle,
+    opacity: isButtonLoading(buttonId) ? 0.7 : 1,
+    cursor: isButtonLoading(buttonId) ? 'not-allowed' : 'pointer',
+    position: 'relative'
+  });
+
+  // Loading text helper
+  const getButtonText = (buttonId, defaultText, loadingText = 'Processing...') =>
+    isButtonLoading(buttonId) ? `⏳ ${loadingText}` : defaultText;
+
+  // Refresh handler — reloads data for current tab
+  const handleRefresh = React.useCallback(async () => {
+    setIsRefreshing(true);
+    setNotification({ type: 'info', message: 'Refreshing data...' });
+    try {
+      // Re-fetch data path info if on manual-process or automation tabs
+      if (activeTab === 'manual-process' || activeTab === 'automation') {
+        await fetchDataPath?.();
+      }
+      // Small delay to show refresh animation
+      await new Promise(r => setTimeout(r, 800));
+      setLastRefreshed(new Date());
+      setNotification({ type: 'success', message: 'Data refreshed successfully' });
+      setTimeout(() => setNotification(null), 2000);
+    } catch (err) {
+      setNotification({ type: 'error', message: 'Refresh failed: ' + err.message });
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [activeTab]);
+
+  // Auto-refresh timer
+  React.useEffect(() => {
+    if (!autoRefresh) return;
+    const timer = setInterval(() => {
+      handleRefresh();
+    }, refreshInterval * 1000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, refreshInterval, handleRefresh]);
+
+  // Auto-discover dataset for current use case
+  useEffect(() => {
+    const ucIdVal = pipelineUc?.ucId || useCaseId;
+    if (!ucIdVal) return;
+    const ucPath = pipelineUc?.path || '';
+    discoverDataset(ucIdVal, ucPath)
+      .then(res => setDatasetId(res.dataset_id))
+      .catch(() => setDatasetId(null));
+  }, [pipelineUc?.ucId, useCaseId]);
+
+  // Handle folder structure route: /use-case/:groupId/:deptId/:aiId/:valueId
+  const isFolderRoute = groupId && aiId && valueId;
+  const isPipelineRoute = !!ucId && !!pipelineUc;
+
+  let department, useCase, detailedUseCases;
+
+  if (isPipelineRoute) {
+    // Pipeline route: /pipeline/:ucId
+    const aiTypeMap = { analytic: 'analytical', generative: 'driver', agentic: 'transactional' };
+    department = {
+      id: `pipeline-${pipelineUc.group}`,
+      name: pipelineUc.department,
+      icon: pipelineUc.aiTypeIcon || 'cpu',
+      color: pipelineUc.groupColor || '#3b82f6',
+      description: `${pipelineUc.groupName} — ${pipelineUc.domain}`,
+      rating: 5,
+    };
+    useCase = {
+      id: pipelineUc.ucId,
+      name: pipelineUc.name,
+      status: 'active',
+      models: 3,
+      accuracy: 95.5,
+      aiType: aiTypeMap[pipelineUc.aiType] || 'analytical',
+      dataLayer: 'pipeline',
+      mlType: 'hybrid',
+      costSavings: 2.5,
+      revenue: 1.8,
+      productivity: 150,
+      explainability: 88,
+      responsibility: 90,
+      governance: 92,
+      trustScore: 90,
+    };
+    detailedUseCases = null;
+  } else if (isFolderRoute) {
+    const group = folderStructure.find((g) => g.id === groupId);
+    const subdept = group?.subdepartments.find((d) => d.id === deptId);
+    const aiCategory = aiCategories.find((a) => a.id === aiId);
+    const valueDriver = valueDrivers.find((v) => v.id === valueId);
+
+    // Get detailed use cases for this department
+    detailedUseCases = getUseCasesForDepartment(groupId, deptId);
+
+    // Create a synthetic department and useCase for folder-based navigation
+    department = {
+      id: `${groupId}-${deptId}`,
+      name: detailedUseCases?.name || subdept?.name || 'Unknown Department',
+      icon: subdept?.icon || 'folder',
+      color: group?.color || '#6b7280',
+      description: detailedUseCases?.description || '',
+      rating: detailedUseCases?.rating || 0,
+    };
+
+    useCase = {
+      id: `${groupId}-${deptId}-${aiId}-${valueId}`,
+      name: `${subdept?.name || 'Use Case'} - ${valueDriver?.name || 'Unknown'}`,
+      status: 'active',
+      models: 3,
+      accuracy: 95.5,
+      aiType: aiCategory?.id || 'analytical',
+      dataLayer: 'pipeline',
+      mlType: 'tabular',
+      costSavings: 2.5,
+      revenue: 1.8,
+      productivity: 150,
+      explainability: 88,
+      responsibility: 90,
+      governance: 92,
+      trustScore: 90,
+    };
+  } else {
+    department = departments.find((d) => d.id === deptId);
+    useCase = department?.useCases.find((uc) => uc.id === useCaseId);
+    detailedUseCases = null;
+  }
 
   // Job action handlers
   const handleRunJob = (jobName) => {
@@ -50,19 +252,330 @@ const UseCase = () => {
     setShowJobModal(true);
   };
 
-  const handleExport = (type) => {
-    setNotification({ type: 'success', message: `Exporting ${type}... Download will start shortly.` });
-    setTimeout(() => setNotification(null), 3000);
+  const handleExport = async (type) => {
+    const btnId = `export-${type.toLowerCase().replace(/\s+/g, '-')}`;
+    setButtonLoading(btnId, true);
+    setNotification({ type: 'info', message: `Generating ${type}...` });
+
+    try {
+      const ucIdVal = pipelineUc?.ucId || useCase?.id || '';
+      const ucPath = pipelineUc?.path || '';
+      let url, filename;
+
+      const typeLower = type.toLowerCase();
+      if (typeLower.includes('excel') || typeLower.includes('csv') || typeLower.includes('data')) {
+        url = `/api/admin/export/excel/${encodeURIComponent(ucIdVal)}?uc_path=${encodeURIComponent(ucPath)}`;
+        filename = `${ucIdVal}_report.xlsx`;
+      } else if (typeLower.includes('word') || typeLower.includes('docx') || typeLower.includes('doc')) {
+        url = `/api/admin/export/word/${encodeURIComponent(ucIdVal)}?uc_path=${encodeURIComponent(ucPath)}`;
+        filename = `${ucIdVal}_report.docx`;
+      } else if (typeLower.includes('ppt') || typeLower.includes('powerpoint') || typeLower.includes('presentation')) {
+        url = `/api/admin/export/pptx/${encodeURIComponent(ucIdVal)}?uc_path=${encodeURIComponent(ucPath)}`;
+        filename = `${ucIdVal}_report.pptx`;
+      } else if (typeLower.includes('markdown') || typeLower.includes('md') || typeLower.includes('readme')) {
+        url = `/api/admin/export/markdown/${encodeURIComponent(ucIdVal)}?uc_path=${encodeURIComponent(ucPath)}`;
+        filename = `${ucIdVal}_report.md`;
+      } else {
+        url = `/api/admin/export/pdf/${encodeURIComponent(ucIdVal)}?uc_path=${encodeURIComponent(ucPath)}`;
+        filename = `${ucIdVal}_report.pdf`;
+      }
+
+      const response = await fetch(url, { method: 'POST' });
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      setNotification({ type: 'success', message: `${type} downloaded successfully!` });
+    } catch (err) {
+      console.error('Export error:', err);
+      setNotification({ type: 'error', message: `Export failed: ${err.message}` });
+    } finally {
+      setButtonLoading(btnId, false);
+      setTimeout(() => setNotification(null), 3000);
+    }
   };
 
   const handleRunPipeline = () => {
-    setNotification({ type: 'success', message: 'Pipeline execution started!' });
-    setTimeout(() => setNotification(null), 3000);
+    setButtonLoading('run-all-pipeline', true);
+    setNotification({ type: 'info', message: 'Starting pipeline execution...' });
+    setTimeout(() => {
+      setButtonLoading('run-all-pipeline', false);
+      setNotification({ type: 'success', message: 'Pipeline execution completed!' });
+      setTimeout(() => setNotification(null), 3000);
+    }, 4000);
   };
 
   const handleRetrain = () => {
-    setNotification({ type: 'info', message: 'Model retraining scheduled. Estimated time: 2 hours.' });
-    setTimeout(() => setNotification(null), 3000);
+    setButtonLoading('retrain-now', true);
+    setNotification({ type: 'info', message: 'Scheduling model retraining...' });
+    setTimeout(() => {
+      setButtonLoading('retrain-now', false);
+      setNotification({ type: 'success', message: 'Model retraining scheduled. Estimated time: 2 hours.' });
+      setTimeout(() => setNotification(null), 3000);
+    }, 2500);
+  };
+
+  // Simulation handler - runs live prediction simulation
+  const handleSimulate = () => {
+    setIsSimulating(true);
+    setShowSimulationModal(true);
+    setSimulationData([]);
+
+    // Generate simulated predictions over time
+    let count = 0;
+    const interval = setInterval(() => {
+      const newPrediction = {
+        id: count + 1,
+        timestamp: new Date().toLocaleTimeString(),
+        transactionId: `TXN-${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
+        amount: (Math.random() * 10000).toFixed(2),
+        riskScore: (Math.random() * 100).toFixed(1),
+        prediction: Math.random() > 0.85 ? 'FRAUD' : 'LEGITIMATE',
+        confidence: (70 + Math.random() * 30).toFixed(1),
+        latency: (Math.random() * 50 + 10).toFixed(0)
+      };
+
+      setSimulationData(prev => [newPrediction, ...prev].slice(0, 20));
+      count++;
+
+      if (count >= 50) {
+        clearInterval(interval);
+        setIsSimulating(false);
+        setNotification({ type: 'success', message: 'Simulation completed! 50 predictions processed.' });
+        setTimeout(() => setNotification(null), 3000);
+      }
+    }, 500);
+  };
+
+  // Fetch data path info for current UC
+  const fetchDataPath = React.useCallback(async () => {
+    if (!pipelineUc) return;
+    setDataPathLoading(true);
+    try {
+      const ucPath = pipelineUc.path || '';
+      const res = await fetch(`/api/admin/process/data-path/${pipelineUc.ucId}?uc_path=${encodeURIComponent(ucPath)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDataPathInfo(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch data path:', e);
+    } finally {
+      setDataPathLoading(false);
+    }
+  }, [pipelineUc]);
+
+  React.useEffect(() => {
+    if (pipelineUc && (activeTab === 'manual-process' || activeTab === 'automation')) {
+      fetchDataPath();
+      // Also fetch existing pipeline results
+      fetch(`/api/admin/process/results/${pipelineUc.ucId}?uc_path=${encodeURIComponent(pipelineUc.path || '')}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setPipelineResults(data); })
+        .catch(() => {});
+    }
+  }, [pipelineUc, activeTab, fetchDataPath]);
+
+  const fetchPortfolio = async () => {
+    try {
+      const res = await fetch('/api/admin/compare/portfolio');
+      if (res.ok) { const data = await res.json(); setPortfolioData(data); }
+    } catch (e) { console.error('Portfolio fetch failed:', e); }
+  };
+
+  const fetchBusinessCase = async () => {
+    const ucIdVal = pipelineUc?.ucId || useCase?.id;
+    if (!ucIdVal) return;
+    try {
+      const res = await fetch(`/api/admin/compare/business-case/${encodeURIComponent(ucIdVal)}`);
+      if (res.ok) { const data = await res.json(); setBusinessCase(data); }
+    } catch (e) { console.error('Business case fetch failed:', e); }
+  };
+
+  const fetchRegulatoryData = async () => {
+    const ucIdVal = pipelineUc?.ucId || useCase?.id;
+    if (!ucIdVal) return;
+    try {
+      const res = await fetch(`/api/admin/regulatory/sr11-7/${encodeURIComponent(ucIdVal)}`);
+      if (res.ok) { const data = await res.json(); setRegulatoryData(data); }
+    } catch (e) { console.error('Regulatory data fetch failed:', e); }
+  };
+
+  React.useEffect(() => {
+    if (activeTab === 'cost-analysis') { fetchBusinessCase(); }
+  }, [activeTab]);
+
+  React.useEffect(() => {
+    if (activeTab === 'governance') { fetchRegulatoryData(); }
+  }, [activeTab]);
+
+  // File upload handler for drag-and-drop
+  const handleFileUpload = async (files) => {
+    if (!pipelineUc || !files || files.length === 0) return;
+    setUploadingFile(true);
+    try {
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('uc_path', pipelineUc.path || '');
+        const res = await fetch(`/api/admin/process/upload/${pipelineUc.ucId}`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (res.ok) {
+          setNotification({ type: 'success', message: `Uploaded ${file.name} successfully!` });
+        } else {
+          const err = await res.json();
+          setNotification({ type: 'error', message: `Upload failed: ${err.detail || 'Unknown error'}` });
+        }
+      }
+      // Refresh data path info
+      await fetchDataPath();
+    } catch (e) {
+      setNotification({ type: 'error', message: `Upload error: ${e.message}` });
+    } finally {
+      setUploadingFile(false);
+      setDragOver(false);
+      setTimeout(() => setNotification(null), 4000);
+    }
+  };
+
+  // Run Process handler
+  const handleRunProcess = async (pipelineType = 'full') => {
+    if (!pipelineUc || processRunning) return;
+    setProcessRunning(true);
+    setProcessStatus('running');
+    setProcessProgress(0);
+    setNotification({ type: 'info', message: `Starting ${pipelineType} pipeline for ${pipelineUc.ucId}...` });
+    try {
+      const res = await fetch('/api/admin/process/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uc_id: pipelineUc.ucId,
+          uc_path: pipelineUc.path || '',
+          pipeline_type: pipelineType,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setProcessJobId(data.job_id);
+        setNotification({ type: 'success', message: data.message });
+        // Poll for progress
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await fetch(`/api/admin/process/status/${data.job_id}`);
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              setProcessProgress(status.progress || 0);
+              if (status.status === 'completed') {
+                clearInterval(pollInterval);
+                setProcessRunning(false);
+                setProcessStatus('completed');
+                setNotification({ type: 'success', message: `Pipeline completed for ${pipelineUc.ucId}!` });
+                setTimeout(() => setNotification(null), 5000);
+                await fetchDataPath();
+                // Fetch real results
+                try {
+                  const resultsRes = await fetch(`/api/admin/process/results/${pipelineUc.ucId}?uc_path=${encodeURIComponent(pipelineUc.path || '')}`);
+                  if (resultsRes.ok) {
+                    const resultsData = await resultsRes.json();
+                    setPipelineResults(resultsData);
+                  }
+                } catch (e) { console.error('Failed to fetch results:', e); }
+              } else if (status.status === 'failed') {
+                clearInterval(pollInterval);
+                setProcessRunning(false);
+                setProcessStatus('failed');
+                setNotification({ type: 'error', message: `Pipeline failed: ${status.error_message || 'Unknown error'}` });
+              }
+            }
+          } catch (e) { /* ignore poll errors */ }
+        }, 3000);
+      } else {
+        const err = await res.json();
+        setProcessRunning(false);
+        setProcessStatus('failed');
+        setNotification({ type: 'error', message: `Failed to start: ${err.detail || 'Unknown error'}` });
+      }
+    } catch (e) {
+      setProcessRunning(false);
+      setProcessStatus('failed');
+      setNotification({ type: 'error', message: `Error: ${e.message}` });
+    }
+    setTimeout(() => setNotification(null), 5000);
+  };
+
+  // Run Automation handler
+  const handleRunAutomation = async (pipelineType = 'full') => {
+    if (!pipelineUc || automationRunning) return;
+    setAutomationRunning(true);
+    setAutomationStatus('running');
+    setAutomationProgress(0);
+    setNotification({ type: 'info', message: `Starting automated pipeline for ${pipelineUc.ucId}...` });
+    try {
+      const res = await fetch('/api/admin/process/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uc_id: pipelineUc.ucId,
+          uc_path: pipelineUc.path || '',
+          pipeline_type: pipelineType,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAutomationJobId(data.job_id);
+        setNotification({ type: 'success', message: data.message });
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await fetch(`/api/admin/process/status/${data.job_id}`);
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              setAutomationProgress(status.progress || 0);
+              if (status.status === 'completed') {
+                clearInterval(pollInterval);
+                setAutomationRunning(false);
+                setAutomationStatus('completed');
+                setNotification({ type: 'success', message: `Automation completed for ${pipelineUc.ucId}!` });
+                setTimeout(() => setNotification(null), 5000);
+                await fetchDataPath();
+              } else if (status.status === 'failed') {
+                clearInterval(pollInterval);
+                setAutomationRunning(false);
+                setAutomationStatus('failed');
+                setNotification({ type: 'error', message: `Automation failed: ${status.error_message || 'Unknown error'}` });
+              }
+            }
+          } catch (e) { /* ignore */ }
+        }, 3000);
+      } else {
+        setAutomationRunning(false);
+        setAutomationStatus('failed');
+      }
+    } catch (e) {
+      setAutomationRunning(false);
+      setAutomationStatus('failed');
+    }
+    setTimeout(() => setNotification(null), 5000);
+  };
+
+  // Format file size
+  const formatSize = (bytes) => {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    let size = bytes;
+    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+    return `${size.toFixed(1)} ${units[i]}`;
   };
 
   const handleViewModelDetails = (model) => {
@@ -76,16 +589,25 @@ const UseCase = () => {
   };
 
   const handleDownloadResults = (txn) => {
-    setNotification({ type: 'success', message: `Downloading results for ${txn.id}...` });
-    setTimeout(() => setNotification(null), 3000);
+    const btnId = `download-${txn.id}`;
+    setButtonLoading(btnId, true);
+    setNotification({ type: 'info', message: `Downloading results for ${txn.id}...` });
+    setTimeout(() => {
+      setButtonLoading(btnId, false);
+      setNotification({ type: 'success', message: `Results for ${txn.id} downloaded!` });
+      setTimeout(() => setNotification(null), 3000);
+    }, 2000);
   };
 
   const handleRerunTransaction = (txn) => {
+    const btnId = `rerun-${txn.id}`;
+    setButtonLoading(btnId, true);
     setNotification({ type: 'info', message: `Re-running transaction ${txn.id}...` });
     setTimeout(() => {
+      setButtonLoading(btnId, false);
       setNotification({ type: 'success', message: `Transaction ${txn.id} completed successfully!` });
       setTimeout(() => setNotification(null), 3000);
-    }, 2000);
+    }, 3000);
   };
 
   if (!department || !useCase) {
@@ -164,13 +686,13 @@ const UseCase = () => {
       <div className="page-header">
         <div className="page-header-content">
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px' }}>
-            <Link to={`/department/${department.id}`} className="btn btn-icon btn-secondary" style={{ marginTop: '4px' }}>
+            <Link to={isPipelineRoute ? '/' : `/department/${department.id}`} className="btn btn-icon btn-secondary" style={{ marginTop: '4px' }}>
               <Icon name="arrow-left" size={18} />
             </Link>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
                 <Link
-                  to={`/department/${department.id}`}
+                  to={isPipelineRoute ? '/' : `/department/${department.id}`}
                   style={{ color: 'var(--gray-500)', fontSize: '14px' }}
                 >
                   {department.name}
@@ -190,29 +712,29 @@ const UseCase = () => {
             </div>
           </div>
           <div className="page-actions">
-            <Link to={`/data-analysis/${useCaseId}`} className="btn btn-secondary">
+            <Link to={`/data-analysis/${useCaseId || useCase.id}`} className="btn btn-secondary">
               <Icon name="chart" size={16} />
               Data Analysis
             </Link>
-            <Link to={`/stakeholder-reports/${useCaseId}`} className="btn btn-secondary">
+            <Link to={`/stakeholder-reports/${useCaseId || useCase.id}`} className="btn btn-secondary">
               <Icon name="file" size={16} />
               Stakeholder Reports
             </Link>
-            <Link to={`/ai-impact/${useCaseId}`} className="btn btn-secondary">
+            <Link to={`/ai-impact/${useCaseId || useCase.id}`} className="btn btn-secondary">
               <Icon name="trending-up" size={16} />
               AI Impact
             </Link>
-            <button className="btn btn-secondary" onClick={() => handleExport('Report')}>
+            <button className="btn btn-secondary" style={getButtonStyle('export-report')} onClick={() => handleAction('export-report', 'Export', 'Generating report', 2500)} disabled={isButtonLoading('export-report')}>
               <Icon name="download" size={16} />
-              Export Report
+              {getButtonText('export-report', 'Export Report', 'Exporting...')}
             </button>
-            <button className="btn btn-secondary" onClick={handleRetrain}>
+            <button className="btn btn-secondary" style={getButtonStyle('retrain')} onClick={() => handleAction('retrain', 'Retrain', 'Scheduling model retraining', 3000)} disabled={isButtonLoading('retrain')}>
               <Icon name="refresh" size={16} />
-              Retrain
+              {getButtonText('retrain', 'Retrain', 'Scheduling...')}
             </button>
-            <button className="btn btn-primary" onClick={handleRunPipeline}>
+            <button className="btn btn-primary" style={getButtonStyle('run-pipeline')} onClick={() => handleAction('run-pipeline', 'Pipeline', 'Starting pipeline execution', 4000)} disabled={isButtonLoading('run-pipeline')}>
               <Icon name="play" size={16} />
-              Run Pipeline
+              {getButtonText('run-pipeline', 'Run Pipeline', 'Running...')}
             </button>
           </div>
         </div>
@@ -240,6 +762,123 @@ const UseCase = () => {
           <button onClick={() => setNotification(null)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', marginLeft: '12px' }}>
             <Icon name="x" size={16} />
           </button>
+        </div>
+      )}
+
+      {/* Live Simulation Modal */}
+      {showSimulationModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1001
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '16px',
+            width: '90%',
+            maxWidth: '900px',
+            maxHeight: '80vh',
+            overflow: 'hidden',
+            boxShadow: '0 25px 50px rgba(0,0,0,0.3)'
+          }}>
+            <div style={{
+              background: 'linear-gradient(135deg, #3b82f6, #1d4ed8)',
+              padding: '20px 24px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h2 style={{ color: 'white', fontSize: '20px', fontWeight: '700', margin: 0 }}>🎭 Live Prediction Simulation</h2>
+                <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '13px', margin: '4px 0 0 0' }}>
+                  {isSimulating ? `Processing predictions... (${simulationData.length}/50)` : 'Simulation complete'}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowSimulationModal(false)}
+                style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: 'white', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer' }}
+              >
+                ✕ Close
+              </button>
+            </div>
+            <div style={{ padding: '20px', maxHeight: '60vh', overflow: 'auto' }}>
+              {/* Stats Row */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '20px' }}>
+                <div style={{ background: '#eff6ff', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700', color: '#1d4ed8' }}>{simulationData.length}</div>
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>Total Predictions</div>
+                </div>
+                <div style={{ background: '#fef2f2', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700', color: '#dc2626' }}>{simulationData.filter(d => d.prediction === 'FRAUD').length}</div>
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>Fraud Detected</div>
+                </div>
+                <div style={{ background: '#ecfdf5', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700', color: '#059669' }}>{simulationData.filter(d => d.prediction === 'LEGITIMATE').length}</div>
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>Legitimate</div>
+                </div>
+                <div style={{ background: '#faf5ff', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700', color: '#7c3aed' }}>{simulationData.length > 0 ? (simulationData.reduce((a, b) => a + parseFloat(b.latency), 0) / simulationData.length).toFixed(0) : 0}ms</div>
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>Avg Latency</div>
+                </div>
+              </div>
+              {/* Live Feed Table */}
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc' }}>
+                    <th style={{ padding: '12px', color: '#374151' }}>Time</th>
+                    <th style={{ padding: '12px', color: '#374151' }}>Transaction ID</th>
+                    <th style={{ padding: '12px', color: '#374151' }}>Amount</th>
+                    <th style={{ padding: '12px', color: '#374151' }}>Risk Score</th>
+                    <th style={{ padding: '12px', color: '#374151' }}>Prediction</th>
+                    <th style={{ padding: '12px', color: '#374151' }}>Confidence</th>
+                    <th style={{ padding: '12px', color: '#374151' }}>Latency</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {simulationData.map((item, idx) => (
+                    <tr key={item.id} style={{ background: idx === 0 ? '#fefce8' : idx % 2 === 0 ? '#fff' : '#f9fafb', transition: 'all 0.3s' }}>
+                      <td style={{ padding: '10px 12px', fontFamily: 'monospace' }}>{item.timestamp}</td>
+                      <td style={{ padding: '10px 12px', fontFamily: 'monospace', color: '#6366f1' }}>{item.transactionId}</td>
+                      <td style={{ padding: '10px 12px', fontWeight: '500' }}>${item.amount}</td>
+                      <td style={{ padding: '10px 12px' }}>
+                        <span style={{
+                          background: parseFloat(item.riskScore) > 70 ? '#fef2f2' : parseFloat(item.riskScore) > 40 ? '#fffbeb' : '#ecfdf5',
+                          color: parseFloat(item.riskScore) > 70 ? '#dc2626' : parseFloat(item.riskScore) > 40 ? '#d97706' : '#059669',
+                          padding: '4px 8px',
+                          borderRadius: '6px',
+                          fontWeight: '600'
+                        }}>{item.riskScore}%</span>
+                      </td>
+                      <td style={{ padding: '10px 12px' }}>
+                        <span style={{
+                          background: item.prediction === 'FRAUD' ? '#dc2626' : '#059669',
+                          color: 'white',
+                          padding: '4px 12px',
+                          borderRadius: '20px',
+                          fontSize: '11px',
+                          fontWeight: '700'
+                        }}>{item.prediction}</span>
+                      </td>
+                      <td style={{ padding: '10px 12px', fontWeight: '500' }}>{item.confidence}%</td>
+                      <td style={{ padding: '10px 12px', color: '#6b7280' }}>{item.latency}ms</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {simulationData.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '40px', color: '#6b7280' }}>
+                  {isSimulating ? '⏳ Starting simulation...' : 'No data yet'}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -539,339 +1178,420 @@ const UseCase = () => {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="tabs" style={{ flexWrap: 'wrap' }}>
-        <button
-          className={`tab ${activeTab === 'overview' ? 'active' : ''}`}
-          onClick={() => setActiveTab('overview')}
-        >
-          Overview
-        </button>
-        <button
-          className={`tab ${activeTab === 'data' ? 'active' : ''}`}
-          onClick={() => setActiveTab('data')}
-        >
-          Data
-        </button>
-        <button
-          className={`tab ${activeTab === 'model' ? 'active' : ''}`}
-          onClick={() => setActiveTab('model')}
-        >
-          Model
-        </button>
-        <button
-          className={`tab ${activeTab === 'automation' ? 'active' : ''}`}
-          onClick={() => setActiveTab('automation')}
-        >
-          Automation
-        </button>
-        <button
-          className={`tab ${activeTab === 'accuracy' ? 'active' : ''}`}
-          onClick={() => setActiveTab('accuracy')}
-        >
-          Accuracy
-        </button>
-        <button
-          className={`tab ${activeTab === 'simulation' ? 'active' : ''}`}
-          onClick={() => setActiveTab('simulation')}
-        >
-          Simulation
-        </button>
-        <button
-          className={`tab ${activeTab === 'architecture' ? 'active' : ''}`}
-          onClick={() => setActiveTab('architecture')}
-        >
-          Architecture
-        </button>
-        <button
-          className={`tab ${activeTab === 'testing' ? 'active' : ''}`}
-          onClick={() => setActiveTab('testing')}
-        >
-          Testing
-        </button>
-        <button
-          className={`tab ${activeTab === 'workflow' ? 'active' : ''}`}
-          onClick={() => setActiveTab('workflow')}
-        >
-          Workflow
-        </button>
-        <button
-          className={`tab ${activeTab === 'governance' ? 'active' : ''}`}
-          onClick={() => setActiveTab('governance')}
-        >
-          Governance
-        </button>
-        <button
-          className={`tab ${activeTab === 'demo' ? 'active' : ''}`}
-          onClick={() => setActiveTab('demo')}
-          style={{ background: activeTab === 'demo' ? 'var(--primary-100)' : undefined }}
-        >
-          Demo
-        </button>
-        <button
-          className={`tab ${activeTab === 'trust-ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('trust-ai')}
-          style={{ background: activeTab === 'trust-ai' ? 'var(--success-100)' : undefined }}
-        >
-          Trust AI
-        </button>
-        <button
-          className={`tab ${activeTab === 'explainable-ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('explainable-ai')}
-        >
-          Explainable AI
-        </button>
-        <button
-          className={`tab ${activeTab === 'ethical-ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('ethical-ai')}
-        >
-          Ethical AI
-        </button>
-        <button
-          className={`tab ${activeTab === 'robust-ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('robust-ai')}
-        >
-          Robust AI
-        </button>
-        <button
-          className={`tab ${activeTab === 'secure-ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('secure-ai')}
-        >
-          Secure AI
-        </button>
-        <button
-          className={`tab ${activeTab === 'portable-ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('portable-ai')}
-        >
-          Portable AI
-        </button>
-        <button
-          className={`tab ${activeTab === 'compliance-ai' ? 'active' : ''}`}
-          onClick={() => setActiveTab('compliance-ai')}
-        >
-          Compliance AI
-        </button>
-        <button
-          className={`tab ${activeTab === 'problem' ? 'active' : ''}`}
-          onClick={() => setActiveTab('problem')}
-          style={{ background: activeTab === 'problem' ? 'var(--warning-100)' : undefined }}
-        >
-          Problem
-        </button>
-        <button
-          className={`tab ${activeTab === 'stakeholders' ? 'active' : ''}`}
-          onClick={() => setActiveTab('stakeholders')}
-          style={{ background: activeTab === 'stakeholders' ? 'var(--success-100)' : undefined }}
-        >
-          Stakeholders
-        </button>
-        <button
-          className={`tab ${activeTab === 'readme' ? 'active' : ''}`}
-          onClick={() => setActiveTab('readme')}
-          style={{ background: activeTab === 'readme' ? 'var(--primary-100)' : undefined }}
-        >
-          README
-        </button>
-        <button
-          className={`tab ${activeTab === 'lld' ? 'active' : ''}`}
-          onClick={() => setActiveTab('lld')}
-          style={{ background: activeTab === 'lld' ? 'var(--danger-100)' : undefined }}
-        >
-          LLD
-        </button>
-        <button
-          className={`tab ${activeTab === 'jobs' ? 'active' : ''}`}
-          onClick={() => setActiveTab('jobs')}
-          style={{ background: activeTab === 'jobs' ? 'var(--cyan-100)' : undefined }}
-        >
-          Jobs
-        </button>
-        <button
-          className={`tab ${activeTab === 'as-is-to-be' ? 'active' : ''}`}
-          onClick={() => setActiveTab('as-is-to-be')}
-          style={{ background: activeTab === 'as-is-to-be' ? 'var(--purple-100)' : undefined }}
-        >
-          AS-IS/TO-BE
-        </button>
-        <button
-          className={`tab ${activeTab === 'operations' ? 'active' : ''}`}
-          onClick={() => setActiveTab('operations')}
-          style={{ background: activeTab === 'operations' ? 'var(--teal-100)' : undefined }}
-        >
-          Operations
-        </button>
-        <button
-          className={`tab ${activeTab === '5w1h' ? 'active' : ''}`}
-          onClick={() => setActiveTab('5w1h')}
-          style={{ background: activeTab === '5w1h' ? 'var(--orange-100)' : undefined }}
-        >
-          5W1H
-        </button>
-        <button
-          className={`tab ${activeTab === 'day-simulation' ? 'active' : ''}`}
-          onClick={() => setActiveTab('day-simulation')}
-          style={{ background: activeTab === 'day-simulation' ? 'var(--pink-100)' : undefined }}
-        >
-          Day Simulation
-        </button>
-        <button
-          className={`tab ${activeTab === 'scenarios' ? 'active' : ''}`}
-          onClick={() => setActiveTab('scenarios')}
-          style={{ background: activeTab === 'scenarios' ? 'var(--indigo-100)' : undefined }}
-        >
-          Scenarios
-        </button>
-        <button
-          className={`tab ${activeTab === 'linkedin-post' ? 'active' : ''}`}
-          onClick={() => setActiveTab('linkedin-post')}
-          style={{ background: activeTab === 'linkedin-post' ? 'var(--blue-100)' : undefined }}
-        >
-          LinkedIn Post
-        </button>
-        <button
-          className={`tab ${activeTab === 'ai-strategy' ? 'active' : ''}`}
-          onClick={() => setActiveTab('ai-strategy')}
-          style={{ background: activeTab === 'ai-strategy' ? 'var(--gradient-primary)' : undefined, color: activeTab === 'ai-strategy' ? 'white' : undefined }}
-        >
-          AI Strategy
-        </button>
-        <button
-          className={`tab ${activeTab === 'interview' ? 'active' : ''}`}
-          onClick={() => setActiveTab('interview')}
-          style={{ background: activeTab === 'interview' ? 'linear-gradient(135deg, var(--purple-500), var(--indigo-600))' : undefined, color: activeTab === 'interview' ? 'white' : undefined }}
-        >
-          Interview Guide
-        </button>
-        <button
-          className={`tab ${activeTab === 'cost-analysis' ? 'active' : ''}`}
-          onClick={() => setActiveTab('cost-analysis')}
-          style={{ background: activeTab === 'cost-analysis' ? 'var(--danger-500)' : undefined, color: activeTab === 'cost-analysis' ? 'white' : undefined }}
-        >
-          Cost Analysis
-        </button>
-        <button
-          className={`tab ${activeTab === 'drift-monitoring' ? 'active' : ''}`}
-          onClick={() => setActiveTab('drift-monitoring')}
-          style={{ background: activeTab === 'drift-monitoring' ? 'var(--warning-500)' : undefined, color: activeTab === 'drift-monitoring' ? 'white' : undefined }}
-        >
-          Drift Monitor
-        </button>
-        <button
-          className={`tab ${activeTab === 'incidents' ? 'active' : ''}`}
-          onClick={() => setActiveTab('incidents')}
-          style={{ background: activeTab === 'incidents' ? 'var(--danger-600)' : undefined, color: activeTab === 'incidents' ? 'white' : undefined }}
-        >
-          Incidents
-        </button>
-        <button
-          className={`tab ${activeTab === 'sla-dashboard' ? 'active' : ''}`}
-          onClick={() => setActiveTab('sla-dashboard')}
-          style={{ background: activeTab === 'sla-dashboard' ? 'var(--success-500)' : undefined, color: activeTab === 'sla-dashboard' ? 'white' : undefined }}
-        >
-          SLA Dashboard
-        </button>
-        <button
-          className={`tab ${activeTab === 'ab-testing' ? 'active' : ''}`}
-          onClick={() => setActiveTab('ab-testing')}
-          style={{ background: activeTab === 'ab-testing' ? 'var(--teal-500)' : undefined, color: activeTab === 'ab-testing' ? 'white' : undefined }}
-        >
-          A/B Testing
-        </button>
-        <button
-          className={`tab ${activeTab === 'bias-fairness' ? 'active' : ''}`}
-          onClick={() => setActiveTab('bias-fairness')}
-          style={{ background: activeTab === 'bias-fairness' ? 'var(--pink-500)' : undefined, color: activeTab === 'bias-fairness' ? 'white' : undefined }}
-        >
-          Bias & Fairness
-        </button>
-        <button
-          className={`tab ${activeTab === 'feedback-loop' ? 'active' : ''}`}
-          onClick={() => setActiveTab('feedback-loop')}
-          style={{ background: activeTab === 'feedback-loop' ? 'var(--cyan-500)' : undefined, color: activeTab === 'feedback-loop' ? 'white' : undefined }}
-        >
-          Feedback Loop
-        </button>
-        <button
-          className={`tab ${activeTab === 'version-history' ? 'active' : ''}`}
-          onClick={() => setActiveTab('version-history')}
-          style={{ background: activeTab === 'version-history' ? 'var(--indigo-500)' : undefined, color: activeTab === 'version-history' ? 'white' : undefined }}
-        >
-          Version History
-        </button>
-        <button
-          className={`tab ${activeTab === 'data-lineage' ? 'active' : ''}`}
-          onClick={() => setActiveTab('data-lineage')}
-          style={{ background: activeTab === 'data-lineage' ? 'var(--orange-500)' : undefined, color: activeTab === 'data-lineage' ? 'white' : undefined }}
-        >
-          Data Lineage
-        </button>
-        <button
-          className={`tab ${activeTab === 'capacity-planning' ? 'active' : ''}`}
-          onClick={() => setActiveTab('capacity-planning')}
-          style={{ background: activeTab === 'capacity-planning' ? 'var(--purple-600)' : undefined, color: activeTab === 'capacity-planning' ? 'white' : undefined }}
-        >
-          Capacity
-        </button>
-        <button
-          className={`tab ${activeTab === 'executive-summary' ? 'active' : ''}`}
-          onClick={() => setActiveTab('executive-summary')}
-          style={{ background: activeTab === 'executive-summary' ? 'linear-gradient(135deg, var(--primary-600), var(--primary-800))' : undefined, color: activeTab === 'executive-summary' ? 'white' : undefined }}
-        >
-          Executive Summary
-        </button>
-        <button
-          className={`tab ${activeTab === 'api-docs' ? 'active' : ''}`}
-          onClick={() => setActiveTab('api-docs')}
-          style={{ background: activeTab === 'api-docs' ? 'var(--gray-700)' : undefined, color: activeTab === 'api-docs' ? 'white' : undefined }}
-        >
-          API Docs
-        </button>
-        <button
-          className={`tab ${activeTab === 'runbook' ? 'active' : ''}`}
-          onClick={() => setActiveTab('runbook')}
-          style={{ background: activeTab === 'runbook' ? 'var(--danger-700)' : undefined, color: activeTab === 'runbook' ? 'white' : undefined }}
-        >
-          Runbook
-        </button>
-        <button
-          className={`tab ${activeTab === 'roadmap' ? 'active' : ''}`}
-          onClick={() => setActiveTab('roadmap')}
-          style={{ background: activeTab === 'roadmap' ? 'var(--success-600)' : undefined, color: activeTab === 'roadmap' ? 'white' : undefined }}
-        >
-          Roadmap
-        </button>
-        <button
-          className={`tab ${activeTab === 'ml-workbench' ? 'active' : ''}`}
-          onClick={() => setActiveTab('ml-workbench')}
-          style={{ background: activeTab === 'ml-workbench' ? 'linear-gradient(135deg, #667eea, #764ba2)' : undefined, color: activeTab === 'ml-workbench' ? 'white' : undefined }}
-        >
-          ML Workbench
-        </button>
-        <button
-          className={`tab ${activeTab === 'auto-pipeline' ? 'active' : ''}`}
-          onClick={() => setActiveTab('auto-pipeline')}
-          style={{ background: activeTab === 'auto-pipeline' ? 'linear-gradient(135deg, #f093fb, #f5576c)' : undefined, color: activeTab === 'auto-pipeline' ? 'white' : undefined }}
-        >
-          Auto Pipeline
-        </button>
-        <button
-          className={`tab ${activeTab === 'demo-mode' ? 'active' : ''}`}
-          onClick={() => setActiveTab('demo-mode')}
-          style={{ background: activeTab === 'demo-mode' ? 'linear-gradient(135deg, #ff6b6b, #feca57)' : undefined, color: activeTab === 'demo-mode' ? 'white' : undefined, fontWeight: 'bold', animation: 'pulse 2s infinite' }}
-        >
-          🎯 Demo Mode
-        </button>
-        <button
-          className={`tab ${activeTab === 'explainability' ? 'active' : ''}`}
-          onClick={() => setActiveTab('explainability')}
-          style={{ background: activeTab === 'explainability' ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : undefined, color: activeTab === 'explainability' ? 'white' : undefined }}
-        >
-          🔍 Explainability Hub
-        </button>
+      {/* Main Tabs - with Prev/Next Navigation */}
+      {(() => {
+        const ucTabs = [
+          { id: 'overview', label: 'Overview' },
+          { id: 'data', label: 'Data' },
+          { id: 'model', label: 'Model' },
+          { id: 'automation', label: 'Automation' },
+          { id: 'accuracy', label: 'Accuracy' },
+          { id: 'problem', label: 'Problem' },
+          { id: 'manual-process', label: 'Manual Process' },
+          { id: 'demo-hub', label: 'Demo' },
+          { id: 'architecture-hub', label: 'Architecture' },
+          { id: 'testing-hub', label: 'Testing' },
+          { id: 'ai-hub', label: 'AI' },
+          { id: 'monitor-hub', label: 'Monitor' },
+          { id: 'scenarios', label: 'B2B/B2C/B2E' },
+        ];
+        const currentIdx = ucTabs.findIndex(t => t.id === activeTab);
+        const isFirst = currentIdx <= 0;
+        const isLast = currentIdx >= ucTabs.length - 1;
+
+        const tabStyles = {
+          'problem': { bg: 'var(--warning-100)', color: undefined },
+          'manual-process': { bg: 'linear-gradient(135deg, #f59e0b, #d97706)', color: 'white' },
+          'demo-hub': { bg: 'linear-gradient(135deg, #ff6b6b, #feca57)', color: 'white' },
+          'architecture-hub': { bg: 'linear-gradient(135deg, #3b82f6, #1e40af)', color: 'white' },
+          'testing-hub': { bg: 'linear-gradient(135deg, #0d9488, #059669)', color: 'white' },
+          'ai-hub': { bg: 'linear-gradient(135deg, #8b5cf6, #6366f1)', color: 'white' },
+          'monitor-hub': { bg: 'linear-gradient(135deg, #059669, #0d9488)', color: 'white' },
+          'scenarios': { bg: 'linear-gradient(135deg, #3b82f6, #10b981)', color: 'white' },
+        };
+
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={() => { if (!isFirst) setActiveTab(ucTabs[currentIdx - 1].id); }}
+              disabled={isFirst}
+              style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px', opacity: isFirst ? 0.4 : 1 }}
+            >
+              <Icon name="chevronLeft" size={12} /> Prev
+            </button>
+            <div className="tabs" style={{ flexWrap: 'wrap', gap: '8px', flex: 1 }}>
+              {ucTabs.map((t) => {
+                const s = tabStyles[t.id];
+                const isActive = activeTab === t.id;
+                const isCategory = ['demo-hub','architecture-hub','testing-hub','ai-hub','monitor-hub','scenarios'].includes(t.id);
+                return (
+                  <button
+                    key={t.id}
+                    className={`tab ${isActive ? 'active' : ''}`}
+                    onClick={() => setActiveTab(t.id)}
+                    style={{
+                      background: isActive && s ? s.bg : undefined,
+                      color: isActive && s ? s.color : undefined,
+                      fontWeight: isCategory ? '600' : undefined,
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={() => { if (!isLast) setActiveTab(ucTabs[currentIdx + 1].id); }}
+              disabled={isLast}
+              style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px', opacity: isLast ? 0.4 : 1 }}
+            >
+              Next <Icon name="chevronRight" size={12} />
+            </button>
+          </div>
+        );
+      })()}
+
+      {/* Tab position indicator + Refresh bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', padding: '8px 16px', background: 'var(--gray-50)', borderRadius: '8px', border: '1px solid var(--gray-200)' }}>
+        <div style={{ fontSize: '11px', color: 'var(--gray-400)' }}>
+          {(() => {
+            const ucTabs = ['overview','data','model','automation','accuracy','problem','manual-process','demo-hub','architecture-hub','testing-hub','ai-hub','monitor-hub','scenarios'];
+            const idx = ucTabs.indexOf(activeTab);
+            return idx >= 0 ? `Tab ${idx + 1} of ${ucTabs.length}` : '';
+          })()}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--gray-400)' }}>
+            Last refreshed: {lastRefreshed.toLocaleTimeString()}
+          </span>
+          <button
+            className="btn btn-sm btn-secondary"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            style={{ padding: '4px 12px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', opacity: isRefreshing ? 0.6 : 1, cursor: isRefreshing ? 'not-allowed' : 'pointer' }}
+          >
+            <Icon name="refresh" size={12} style={{ animation: isRefreshing ? 'spin 1s linear infinite' : 'none' }} />
+            {isRefreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', borderLeft: '1px solid var(--gray-300)', paddingLeft: '12px' }}>
+            <label style={{ fontSize: '11px', color: 'var(--gray-500)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+                style={{ width: '14px', height: '14px', cursor: 'pointer' }}
+              />
+              Auto
+            </label>
+            {autoRefresh && (
+              <select
+                value={refreshInterval}
+                onChange={(e) => setRefreshInterval(Number(e.target.value))}
+                style={{ fontSize: '11px', padding: '2px 4px', border: '1px solid var(--gray-300)', borderRadius: '4px', background: 'white' }}
+              >
+                <option value={10}>10s</option>
+                <option value={30}>30s</option>
+                <option value={60}>1m</option>
+                <option value={300}>5m</option>
+              </select>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* Sub-tab breadcrumb — Back to parent hub */}
+      {(() => {
+        const subTabMap = {
+          // Demo Hub sub-tabs
+          'simulation': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          'demo': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          'demo-mode': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          'operations': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          '5w1h': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          'day-simulation': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          'bot-ui': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          'operation-flow': { parent: 'demo-hub', parentLabel: 'Demo Hub', icon: '🎯' },
+          // Architecture Hub sub-tabs
+          'brd': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'hld': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'lld': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'c4-model': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'adr': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'system-arch': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'architecture': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'runbook': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'roadmap': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'ml-workbench': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'stakeholders': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'readme': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'as-is-to-be': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'api-docs': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'executive-summary': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'capacity-planning': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'data-lineage': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'feedback-loop': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'linkedin-post': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'ai-strategy': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'interview': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          'cost-analysis': { parent: 'architecture-hub', parentLabel: 'Architecture Hub', icon: '🏗️' },
+          // Testing Hub sub-tabs
+          'testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'ab-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'workflow': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'functional-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'positive-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'negative-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'performance-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'load-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'api-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'manual-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'automated-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          'regression-testing': { parent: 'testing-hub', parentLabel: 'Testing Hub', icon: '🧪' },
+          // AI Hub sub-tabs
+          'trust-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'explainable-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'ethical-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'robust-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'secure-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'portable-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'compliance-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'explainability': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'governance': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'bias-fairness': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          'responsible-ai': { parent: 'ai-hub', parentLabel: 'AI Hub', icon: '🧠' },
+          // Monitor Hub sub-tabs
+          'jobs': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'drift-monitor': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'drift-monitoring': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'incidents': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'sla-dashboard': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'version-history': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'versions': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'auto-pipeline': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'rag-pipeline': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'monitor': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'performance': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'features': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+          'automated': { parent: 'monitor-hub', parentLabel: 'Monitor Hub', icon: '📊' },
+        };
+        const info = subTabMap[activeTab];
+        if (!info) return null;
+        const tabLabel = activeTab.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', padding: '10px 16px', background: 'linear-gradient(135deg, #f8fafc, #f1f5f9)', borderRadius: '10px', border: '1px solid var(--gray-200)', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+            <button
+              className="btn btn-sm btn-primary"
+              onClick={() => setActiveTab(info.parent)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', fontWeight: '600', fontSize: '12px', borderRadius: '6px' }}
+            >
+              <Icon name="chevronLeft" size={14} />
+              Back to {info.parentLabel}
+            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--gray-500)' }}>
+              <span>{info.icon}</span>
+              <span style={{ color: 'var(--gray-400)' }}>/</span>
+              <span style={{ fontWeight: '600', color: 'var(--gray-700)' }}>{tabLabel}</span>
+            </div>
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: '11px', color: 'var(--gray-400)', background: 'var(--gray-100)', padding: '2px 8px', borderRadius: '4px' }}>Sub-tab</span>
+          </div>
+        );
+      })()}
 
       {activeTab === 'overview' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {/* Export Options Bar */}
+          <div className="card" style={{ background: 'linear-gradient(135deg, #1e1b4b, #312e81)', padding: '0' }}>
+            <div className="card-body" style={{ padding: '20px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+              <div>
+                <h3 style={{ fontSize: '18px', fontWeight: '700', color: 'white', marginBottom: '4px' }}>📤 Export & Share</h3>
+                <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.7)', margin: 0 }}>Export use case documentation in multiple formats</p>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <button
+                  className="btn"
+                  style={getButtonStyle('export-pdf', { background: '#ef4444', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' })}
+                  onClick={() => handleAction('export-pdf', 'Export PDF', 'Generating PDF', 3000)}
+                  disabled={isButtonLoading('export-pdf')}
+                >
+                  {getButtonText('export-pdf', '📄 PDF', 'Generating...')}
+                </button>
+                <button
+                  className="btn"
+                  style={getButtonStyle('export-word', { background: '#3b82f6', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' })}
+                  onClick={() => handleAction('export-word', 'Export Word', 'Generating Word doc', 3000)}
+                  disabled={isButtonLoading('export-word')}
+                >
+                  {getButtonText('export-word', '📝 Word', 'Generating...')}
+                </button>
+                <button
+                  className="btn"
+                  style={getButtonStyle('export-ppt', { background: '#f59e0b', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' })}
+                  onClick={() => handleAction('export-ppt', 'Export PPT', 'Generating presentation', 4000)}
+                  disabled={isButtonLoading('export-ppt')}
+                >
+                  {getButtonText('export-ppt', '📊 PPT', 'Generating...')}
+                </button>
+                <button
+                  className="btn"
+                  style={getButtonStyle('export-md', { background: '#10b981', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' })}
+                  onClick={() => handleAction('export-md', 'Export MD', 'Generating Markdown', 2000)}
+                  disabled={isButtonLoading('export-md')}
+                >
+                  {getButtonText('export-md', '📋 Markdown', 'Generating...')}
+                </button>
+                <button
+                  className="btn"
+                  style={getButtonStyle('copy-linkedin', { background: '#0077b5', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' })}
+                  onClick={() => {
+                    handleAction('copy-linkedin', 'Copy', 'Copying to clipboard', 1500);
+                    navigator.clipboard.writeText(`🚀 Exciting AI Use Case: ${useCase?.name || 'Fraud Detection'}\n\n✅ Accuracy: 95.2%\n✅ ROI: 340%\n✅ Savings: $2.8M/year\n\nKey highlights:\n• Real-time ML-powered detection\n• 23ms average latency\n• Production-ready architecture\n\n#AI #MachineLearning #DataScience #Innovation`);
+                  }}
+                  disabled={isButtonLoading('copy-linkedin')}
+                >
+                  {getButtonText('copy-linkedin', '💼 LinkedIn', 'Copying...')}
+                </button>
+              </div>
+            </div>
+          </div>
+          {/* Department Use Cases Table - Only shown for folder routes with detailed data */}
+          {detailedUseCases && detailedUseCases.useCases && (
+            <div className="card" style={{ border: '2px solid var(--primary-300)' }}>
+              <div className="card-header" style={{ background: 'linear-gradient(135deg, #1e40af, #3b82f6)', padding: '20px 24px' }}>
+                <div>
+                  <h3 className="card-title" style={{ color: 'white', fontSize: '18px', fontWeight: '700', marginBottom: '4px' }}>
+                    {detailedUseCases.name} — Use Case, Data & AI Mapping
+                  </h3>
+                  {detailedUseCases.description && (
+                    <p style={{ color: 'rgba(255,255,255,0.9)', fontSize: '13px', margin: 0, maxWidth: '800px' }}>{detailedUseCases.description}</p>
+                  )}
+                </div>
+                {detailedUseCases.rating && (
+                  <div style={{ color: '#fbbf24', fontSize: '20px' }}>{'⭐'.repeat(detailedUseCases.rating)}</div>
+                )}
+              </div>
+              <div className="card-body" style={{ padding: '0', overflow: 'auto' }}>
+                <table className="table" style={{ margin: 0, fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ background: 'linear-gradient(135deg, #dbeafe, #eff6ff)' }}>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>Value Driver</th>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>AI Category</th>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>Use Case ID</th>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>Use Case Name</th>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>Data Type</th>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>AI Approach</th>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>Public Data Source</th>
+                      <th style={{ padding: '14px 16px', color: '#1e40af', fontWeight: '700', borderBottom: '2px solid #3b82f6' }}>Download</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detailedUseCases.useCases.map((uc, index) => (
+                      <tr key={uc.id} style={{
+                        background: index % 2 === 0 ? '#ffffff' : '#f8fafc',
+                        borderLeft: `4px solid ${
+                          uc.valueDriver.includes('Revenue') ? '#10b981' :
+                          uc.valueDriver.includes('Cost') ? '#ef4444' :
+                          uc.valueDriver.includes('Productivity') ? '#f59e0b' :
+                          uc.valueDriver.includes('Decision') ? '#3b82f6' :
+                          '#8b5cf6'
+                        }`
+                      }}>
+                        <td style={{ padding: '12px 16px', fontWeight: '500', color: '#374151' }}>{uc.valueDriver}</td>
+                        <td style={{ padding: '12px 16px' }}>
+                          <span style={{
+                            background: uc.aiCategory.includes('Business') ? '#dbeafe' :
+                                       uc.aiCategory.includes('Decision') ? '#d1fae5' :
+                                       uc.aiCategory.includes('Analytic') ? '#fef3c7' :
+                                       uc.aiCategory.includes('Transactional') ? '#fee2e2' :
+                                       '#ede9fe',
+                            color: uc.aiCategory.includes('Business') ? '#1e40af' :
+                                   uc.aiCategory.includes('Decision') ? '#065f46' :
+                                   uc.aiCategory.includes('Analytic') ? '#92400e' :
+                                   uc.aiCategory.includes('Transactional') ? '#991b1b' :
+                                   '#5b21b6',
+                            padding: '4px 10px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: '600'
+                          }}>{uc.aiCategory}</span>
+                        </td>
+                        <td style={{ padding: '12px 16px', fontFamily: 'monospace', fontWeight: '600', color: '#6366f1' }}>{uc.id}</td>
+                        <td style={{ padding: '12px 16px', fontWeight: '500', color: '#111827' }}>{uc.name}</td>
+                        <td style={{ padding: '12px 16px', color: '#6b7280', fontSize: '12px' }}>{uc.dataType}</td>
+                        <td style={{ padding: '12px 16px' }}>
+                          <span style={{
+                            background: '#f3f4f6',
+                            padding: '4px 8px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '500',
+                            color: '#374151'
+                          }}>{uc.aiApproach}</span>
+                        </td>
+                        <td style={{ padding: '12px 16px', color: '#6b7280', fontSize: '12px' }}>{uc.publicDataSource}</td>
+                        <td style={{ padding: '12px 16px' }}>
+                          <a
+                            href={uc.downloadLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              color: '#3b82f6',
+                              textDecoration: 'none',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              fontSize: '12px',
+                              fontWeight: '500'
+                            }}
+                          >
+                            🔗 Link
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Data Type Mapping Table - if available */}
+          {detailedUseCases && detailedUseCases.dataTypeMapping && (
+            <div className="card" style={{ border: '2px solid var(--success-300)' }}>
+              <div className="card-header" style={{ background: 'linear-gradient(135deg, #065f46, #10b981)', padding: '16px 24px' }}>
+                <h3 className="card-title" style={{ color: 'white', fontSize: '16px', fontWeight: '700' }}>
+                  🧠 Data Type → AI Technique Mapping
+                </h3>
+              </div>
+              <div className="card-body" style={{ padding: '0' }}>
+                <table className="table" style={{ margin: 0 }}>
+                  <thead>
+                    <tr style={{ background: '#ecfdf5' }}>
+                      <th style={{ padding: '12px 16px', color: '#065f46', fontWeight: '700', borderBottom: '2px solid #10b981' }}>Data Type</th>
+                      <th style={{ padding: '12px 16px', color: '#065f46', fontWeight: '700', borderBottom: '2px solid #10b981' }}>Examples</th>
+                      <th style={{ padding: '12px 16px', color: '#065f46', fontWeight: '700', borderBottom: '2px solid #10b981' }}>Best AI Technique</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detailedUseCases.dataTypeMapping.map((item, index) => (
+                      <tr key={index} style={{ background: index % 2 === 0 ? '#ffffff' : '#f0fdf4' }}>
+                        <td style={{ padding: '10px 16px', fontWeight: '600', color: '#374151' }}>{item.dataType}</td>
+                        <td style={{ padding: '10px 16px', color: '#6b7280' }}>{item.examples}</td>
+                        <td style={{ padding: '10px 16px' }}>
+                          <span style={{ background: '#d1fae5', color: '#065f46', padding: '4px 10px', borderRadius: '8px', fontWeight: '500', fontSize: '13px' }}>
+                            {item.bestTechnique}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* Row 1: Performance Trend */}
           <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '16px' }}>
             <div className="card" style={{ background: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)', border: '1px solid var(--primary-200)' }}>
@@ -1087,106 +1807,165 @@ const UseCase = () => {
         </div>
       )}
 
-      {activeTab === 'manual' && (
+      {activeTab === 'manual-process' && (
         <>
-          {/* Section 1: INPUT */}
+          {/* Section 1: INPUT — Data Path & Upload */}
           <div className="card" style={{ marginBottom: '24px' }}>
             <div className="card-header" style={{ background: 'var(--primary-50)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'var(--primary-600)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700' }}>1</div>
                 <div>
-                  <h3 className="card-title">Input</h3>
-                  <p className="card-subtitle">Configure data source and upload files</p>
+                  <h3 className="card-title">Input — Data Source</h3>
+                  <p className="card-subtitle">Data folder path, existing files, and drag-and-drop upload</p>
                 </div>
               </div>
+              <button className="btn btn-secondary btn-sm" onClick={fetchDataPath} disabled={dataPathLoading}>
+                <Icon name="refresh" size={14} /> {dataPathLoading ? 'Loading...' : 'Refresh'}
+              </button>
             </div>
             <div className="card-body">
+              {/* Data Folder Path */}
+              <div style={{ marginBottom: '20px' }}>
+                <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Data Folder Path</h4>
+                {isPipelineRoute && pipelineUc?.path && (
+                  <div style={{ padding: '12px 16px', background: 'var(--gray-50)', borderRadius: '8px', border: '1px solid var(--gray-200)', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--gray-500)', marginBottom: '4px' }}>5-Star Use Case Path</div>
+                    <code style={{ fontSize: '13px', color: 'var(--primary-700)', wordBreak: 'break-all' }}>
+                      5_Star_UseCases/{pipelineUc.path}
+                    </code>
+                  </div>
+                )}
+                {dataPathInfo && (
+                  <>
+                    {dataPathInfo.data_dir && (
+                      <div style={{ padding: '12px 16px', background: 'var(--success-50)', borderRadius: '8px', border: '1px solid var(--success-200)', marginBottom: '8px' }}>
+                        <div style={{ fontSize: '12px', color: 'var(--success-700)', marginBottom: '4px' }}>Data Directory (linked)</div>
+                        <code style={{ fontSize: '13px', color: 'var(--success-800)', wordBreak: 'break-all' }}>
+                          {dataPathInfo.data_dir}
+                        </code>
+                        <span style={{ marginLeft: '12px', fontSize: '11px', color: 'var(--success-600)' }}>
+                          {dataPathInfo.files.length} file(s) | {formatSize(dataPathInfo.total_size)}
+                        </span>
+                      </div>
+                    )}
+                    {dataPathInfo.preprocessing_dir && (
+                      <div style={{ padding: '12px 16px', background: 'var(--warning-50)', borderRadius: '8px', border: '1px solid var(--warning-200)', marginBottom: '8px' }}>
+                        <div style={{ fontSize: '12px', color: 'var(--warning-700)', marginBottom: '4px' }}>Preprocessing Output</div>
+                        <code style={{ fontSize: '13px', color: 'var(--warning-800)', wordBreak: 'break-all' }}>
+                          {dataPathInfo.preprocessing_dir}
+                        </code>
+                        <span style={{ marginLeft: '12px', fontSize: '11px', color: 'var(--warning-600)' }}>
+                          {dataPathInfo.preprocessing_files.length} file(s)
+                        </span>
+                      </div>
+                    )}
+                    {!dataPathInfo.data_dir && !dataPathInfo.preprocessing_dir && (
+                      <div style={{ padding: '12px 16px', background: 'var(--danger-50)', borderRadius: '8px', border: '1px solid var(--danger-200)' }}>
+                        <span style={{ fontSize: '13px', color: 'var(--danger-700)' }}>No data directory found — upload files below to create one</span>
+                      </div>
+                    )}
+                  </>
+                )}
+                {!dataPathInfo && !dataPathLoading && (
+                  <div style={{ padding: '12px', color: 'var(--gray-500)', fontSize: '13px' }}>Click Refresh to load data path information</div>
+                )}
+                {dataPathLoading && (
+                  <div style={{ padding: '12px', color: 'var(--gray-500)', fontSize: '13px' }}>Loading data path...</div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2" style={{ gap: '24px' }}>
-                {/* Data Source Selection */}
+                {/* Existing Files */}
                 <div>
-                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '16px' }}>Data Source</h4>
-                  <div className="form-group">
-                    <label className="form-label">Source Type</label>
-                    <select className="form-select">
-                      <option>Upload File</option>
-                      <option>Database Query</option>
-                      <option>API Endpoint</option>
-                      <option>S3 Bucket</option>
-                      <option>Manual Entry</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">File Format</label>
-                    <select className="form-select">
-                      <option>CSV</option>
-                      <option>JSON</option>
-                      <option>Excel (.xlsx)</option>
-                      <option>Parquet</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Encoding</label>
-                    <select className="form-select">
-                      <option>UTF-8</option>
-                      <option>ASCII</option>
-                      <option>ISO-8859-1</option>
-                    </select>
-                  </div>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Existing Data Files</h4>
+                  {dataPathInfo && dataPathInfo.files.length > 0 ? (
+                    <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid var(--gray-200)', borderRadius: '8px' }}>
+                      {dataPathInfo.files.map((f, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderBottom: i < dataPathInfo.files.length - 1 ? '1px solid var(--gray-100)' : 'none' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <Icon name="file" size={14} />
+                            <div>
+                              <div style={{ fontSize: '13px', fontWeight: '500' }}>{f.name}</div>
+                              <div style={{ fontSize: '11px', color: 'var(--gray-500)' }}>{formatSize(f.size)} | {f.type.toUpperCase()}</div>
+                            </div>
+                          </div>
+                          <span style={{ fontSize: '11px', color: 'var(--gray-400)' }}>{new Date(f.modified).toLocaleDateString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '24px', textAlign: 'center', border: '1px solid var(--gray-200)', borderRadius: '8px', color: 'var(--gray-500)', fontSize: '13px' }}>
+                      {dataPathInfo ? 'No data files found in this directory' : 'Loading...'}
+                    </div>
+                  )}
+                  {dataPathInfo && dataPathInfo.preprocessing_files.length > 0 && (
+                    <div style={{ marginTop: '12px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--gray-600)', marginBottom: '8px' }}>Preprocessed Files ({dataPathInfo.preprocessing_files.length})</div>
+                      <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--gray-200)', borderRadius: '8px' }}>
+                        {dataPathInfo.preprocessing_files.slice(0, 10).map((f, i) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid var(--gray-100)', fontSize: '12px' }}>
+                            <span style={{ fontWeight: '500' }}>{f.name}</span>
+                            <span style={{ color: 'var(--gray-500)' }}>{formatSize(f.size)}</span>
+                          </div>
+                        ))}
+                        {dataPathInfo.preprocessing_files.length > 10 && (
+                          <div style={{ padding: '8px 12px', fontSize: '11px', color: 'var(--gray-500)', textAlign: 'center' }}>
+                            +{dataPathInfo.preprocessing_files.length - 10} more files
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* File Upload */}
+                {/* Drag & Drop Upload */}
                 <div>
-                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '16px' }}>Upload Data</h4>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Upload Data</h4>
                   <div
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={(e) => { e.preventDefault(); handleFileUpload(e.dataTransfer.files); }}
                     style={{
-                      border: '2px dashed var(--gray-300)',
+                      border: `2px dashed ${dragOver ? 'var(--primary-500)' : 'var(--gray-300)'}`,
                       borderRadius: '8px',
                       padding: '32px',
                       textAlign: 'center',
-                      background: 'var(--gray-50)',
+                      background: dragOver ? 'var(--primary-50)' : 'var(--gray-50)',
+                      transition: 'all 0.2s',
+                      cursor: uploadingFile ? 'wait' : 'pointer',
+                      opacity: uploadingFile ? 0.6 : 1,
                     }}
                   >
                     <Icon name="upload" size={36} />
                     <p style={{ marginTop: '12px', color: 'var(--gray-600)', fontSize: '14px' }}>
-                      Drag and drop files here
+                      {uploadingFile ? 'Uploading...' : dragOver ? 'Drop files here' : 'Drag and drop files here'}
                     </p>
                     <p style={{ fontSize: '12px', color: 'var(--gray-400)', marginTop: '4px' }}>
-                      CSV, JSON, Excel, Parquet (max 100MB)
+                      CSV, JSON, Excel, Parquet, TXT (max 500MB)
                     </p>
-                    <button className="btn btn-secondary btn-sm" style={{ marginTop: '12px' }}>
-                      Browse Files
+                    <input
+                      type="file"
+                      id="manual-file-input"
+                      style={{ display: 'none' }}
+                      accept=".csv,.json,.xlsx,.xls,.parquet,.txt"
+                      multiple
+                      onChange={(e) => handleFileUpload(e.target.files)}
+                      disabled={uploadingFile}
+                    />
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      style={{ marginTop: '12px' }}
+                      onClick={() => document.getElementById('manual-file-input').click()}
+                      disabled={uploadingFile}
+                    >
+                      {uploadingFile ? 'Uploading...' : 'Browse Files'}
                     </button>
                   </div>
-                </div>
-              </div>
-
-              {/* Input Preview */}
-              <div style={{ marginTop: '24px' }}>
-                <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Input Data Preview</h4>
-                <div style={{ overflowX: 'auto', border: '1px solid var(--gray-200)', borderRadius: '8px' }}>
-                  <table className="table" style={{ marginBottom: 0 }}>
-                    <thead>
-                      <tr>
-                        <th>Customer ID</th>
-                        <th>Age</th>
-                        <th>Income</th>
-                        <th>Credit Score</th>
-                        <th>Loan Amount</th>
-                        <th>Employment</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr><td>C001</td><td>35</td><td>75,000</td><td>720</td><td>250,000</td><td>Employed</td></tr>
-                      <tr><td>C002</td><td>42</td><td>92,000</td><td>680</td><td>180,000</td><td>Self-Employed</td></tr>
-                      <tr><td>C003</td><td>28</td><td>55,000</td><td>750</td><td>120,000</td><td>Employed</td></tr>
-                      <tr><td>C004</td><td>51</td><td>120,000</td><td>800</td><td>450,000</td><td>Employed</td></tr>
-                      <tr><td>C005</td><td>33</td><td>68,000</td><td>695</td><td>200,000</td><td>Contract</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', fontSize: '13px', color: 'var(--gray-500)' }}>
-                  <span>Showing 5 of 1,234 records</span>
-                  <span>6 columns detected</span>
+                  <div style={{ marginTop: '12px', padding: '10px 12px', background: 'var(--gray-50)', borderRadius: '6px', fontSize: '12px', color: 'var(--gray-600)' }}>
+                    Files will be saved to: <code style={{ color: 'var(--primary-600)' }}>
+                      {dataPathInfo?.data_dir || (isPipelineRoute && pipelineUc?.path ? `5_Star_UseCases/${pipelineUc.path}/data` : `uploads/${pipelineUc?.ucId || useCase?.id || 'unknown'}`)}
+                    </code>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1266,7 +2045,10 @@ const UseCase = () => {
               <div style={{ marginTop: '24px', padding: '20px', background: 'var(--gray-50)', borderRadius: '8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
                   <span style={{ fontWeight: '500' }}>Processing Status</span>
-                  <span className="status-badge info"><span className="status-dot" />Ready to Run</span>
+                  <span className={`status-badge ${processStatus === 'running' ? 'warning' : processStatus === 'completed' ? 'success' : processStatus === 'failed' ? 'danger' : 'info'}`}>
+                    <span className="status-dot" />
+                    {processStatus === 'running' ? `Running (${processProgress}%)` : processStatus === 'completed' ? 'Completed' : processStatus === 'failed' ? 'Failed' : 'Ready to Run'}
+                  </span>
                 </div>
                 <div style={{ display: 'flex', gap: '32px' }}>
                   <div style={{ textAlign: 'center' }}>
@@ -1282,19 +2064,132 @@ const UseCase = () => {
                     <div style={{ fontSize: '12px', color: 'var(--gray-500)' }}>Model Version</div>
                   </div>
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '12px' }}>
-                    <button className="btn btn-secondary">
+                    <button className="btn btn-secondary" disabled={processRunning} style={getButtonStyle('action-1')} onClick={() => handleAction('action-1', 'Advanced settings coming soon', 'Advanced settings coming soon', 1500)}>
                       <Icon name="settings" size={16} />
                       Advanced
                     </button>
-                    <button className="btn btn-primary">
+                    <button
+                      className="btn btn-primary"
+                      disabled={processRunning}
+                      onClick={() => handleRunProcess('full')}
+                      style={{ opacity: processRunning ? 0.6 : 1, cursor: processRunning ? 'not-allowed' : 'pointer', minWidth: '160px' }}
+                    >
                       <Icon name="play" size={16} />
-                      Run Process
+                      {processRunning ? `Running... ${processProgress}%` : 'Run Process'}
                     </button>
                   </div>
                 </div>
               </div>
             </div>
           </div>
+
+          {/* Pipeline Progress Flow — Manual Process */}
+          {(processRunning || processStatus === 'completed' || processStatus === 'failed') && (
+            <div className="card" style={{ marginBottom: '24px', border: processRunning ? '2px solid var(--warning-300)' : processStatus === 'completed' ? '2px solid var(--success-300)' : '2px solid var(--danger-300)' }}>
+              <div className="card-header" style={{ background: processRunning ? 'var(--warning-50)' : processStatus === 'completed' ? 'var(--success-50)' : 'var(--danger-50)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: processRunning ? 'var(--warning-500)' : processStatus === 'completed' ? 'var(--success-500)' : 'var(--danger-500)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Icon name={processRunning ? 'clock' : processStatus === 'completed' ? 'check' : 'alert-triangle'} size={14} />
+                  </div>
+                  <h3 className="card-title">{processRunning ? 'Process Running...' : processStatus === 'completed' ? 'Process Completed' : 'Process Failed'}</h3>
+                </div>
+                <span style={{ fontFamily: 'monospace', fontSize: '13px', color: 'var(--gray-600)' }}>Job #{processJobId || '—'} | {new Date().toLocaleTimeString()}</span>
+              </div>
+              <div className="card-body">
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '13px' }}>
+                    <span>Progress</span>
+                    <span style={{ fontWeight: '600' }}>{processProgress}%</span>
+                  </div>
+                  <div style={{ width: '100%', height: '10px', background: 'var(--gray-200)', borderRadius: '5px', overflow: 'hidden' }}>
+                    <div style={{ width: `${processProgress}%`, height: '100%', background: processRunning ? 'var(--warning-500)' : processStatus === 'completed' ? 'var(--success-500)' : 'var(--danger-500)', borderRadius: '5px', transition: 'width 0.5s ease' }} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {[
+                    { name: 'Data Load', pct: 5 }, { name: 'Preprocessing', pct: 15 }, { name: 'Feature Eng.', pct: 30 },
+                    { name: 'Training', pct: 50 }, { name: 'Evaluation', pct: 65 }, { name: 'SHAP Analysis', pct: 75 },
+                    { name: 'Governance', pct: 85 }, { name: 'Report Gen', pct: 95 }, { name: 'Complete', pct: 100 },
+                  ].map((step, i) => {
+                    const done = processProgress >= step.pct;
+                    const active = processProgress >= (i > 0 ? [5,15,30,50,65,75,85,95,100][i-1] : 0) && processProgress < step.pct;
+                    return (
+                      <div key={i} style={{
+                        padding: '5px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: '500',
+                        background: done ? 'var(--success-100)' : active ? 'var(--warning-100)' : 'var(--gray-100)',
+                        border: `1px solid ${done ? 'var(--success-300)' : active ? 'var(--warning-300)' : 'var(--gray-200)'}`,
+                        color: done ? 'var(--success-700)' : active ? 'var(--warning-700)' : 'var(--gray-500)',
+                      }}>
+                        {done ? '✓ ' : active ? '▶ ' : ''}{step.name}
+                      </div>
+                    );
+                  })}
+                </div>
+                {processStatus === 'completed' && (
+                  <div>
+                    {/* Pipeline Result Summary from real data */}
+                    {pipelineResults?.has_results && pipelineResults.summary ? (
+                      <div>
+                        <div className="grid grid-cols-5" style={{ gap: '12px', marginBottom: '16px' }}>
+                          {[
+                            { label: 'Rows', value: (pipelineResults.summary.total_rows || 0).toLocaleString(), color: 'var(--primary-600)' },
+                            { label: 'Columns', value: pipelineResults.summary.total_columns || '—', color: 'var(--success-600)' },
+                            { label: 'Data Quality', value: pipelineResults.summary.data_quality_score ? `${pipelineResults.summary.data_quality_score.toFixed(1)}%` : '—', color: 'var(--success-600)' },
+                            { label: 'Missing %', value: pipelineResults.summary.avg_missing_pct !== undefined ? `${pipelineResults.summary.avg_missing_pct.toFixed(1)}%` : '—', color: pipelineResults.summary.avg_missing_pct > 5 ? 'var(--warning-600)' : 'var(--success-600)' },
+                            { label: 'Target', value: pipelineResults.summary.target_column || '—', color: 'var(--purple-600)' },
+                          ].map((m, i) => (
+                            <div key={i} style={{ padding: '12px', background: 'var(--gray-50)', borderRadius: '8px', textAlign: 'center' }}>
+                              <div style={{ fontSize: '20px', fontWeight: '700', color: m.color }}>{m.value}</div>
+                              <div style={{ fontSize: '11px', color: 'var(--gray-500)', marginTop: '2px' }}>{m.label}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {pipelineResults.summary.category && (
+                          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                            <span style={{ fontSize: '12px', padding: '4px 12px', borderRadius: '12px', background: 'var(--primary-100)', color: 'var(--primary-700)', fontWeight: '600' }}>{pipelineResults.summary.category}</span>
+                            <span style={{ fontSize: '12px', padding: '4px 12px', borderRadius: '12px', background: 'var(--success-100)', color: 'var(--success-700)', fontWeight: '600' }}>Numeric: {pipelineResults.summary.numeric_columns}</span>
+                            <span style={{ fontSize: '12px', padding: '4px 12px', borderRadius: '12px', background: 'var(--warning-100)', color: 'var(--warning-700)', fontWeight: '600' }}>Categorical: {pipelineResults.summary.categorical_columns}</span>
+                            {pipelineResults.summary.class_imbalance_ratio && (
+                              <span style={{ fontSize: '12px', padding: '4px 12px', borderRadius: '12px', background: 'var(--danger-100)', color: 'var(--danger-700)', fontWeight: '600' }}>Imbalance: {pipelineResults.summary.class_imbalance_ratio.toFixed(1)}:1</span>
+                            )}
+                            <span style={{ fontSize: '12px', padding: '4px 12px', borderRadius: '12px', background: 'var(--gray-100)', color: 'var(--gray-700)' }}>Run: {new Date(pipelineResults.summary.run_timestamp).toLocaleString()}</span>
+                          </div>
+                        )}
+                        {pipelineResults.metrics?.class_balance?.class_distribution && (
+                          <div style={{ padding: '12px', background: 'var(--gray-50)', borderRadius: '8px' }}>
+                            <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '8px', color: 'var(--gray-600)' }}>Class Distribution</div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              {Object.entries(pipelineResults.metrics.class_balance.class_distribution).map(([cls, cnt], i) => (
+                                <div key={i} style={{ flex: 1, padding: '8px', background: 'white', borderRadius: '6px', textAlign: 'center', border: '1px solid var(--gray-200)' }}>
+                                  <div style={{ fontWeight: '700', fontSize: '16px', color: i === 0 ? 'var(--success-600)' : 'var(--danger-600)' }}>{Number(cnt).toLocaleString()}</div>
+                                  <div style={{ fontSize: '11px', color: 'var(--gray-500)' }}>Class {cls}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-5" style={{ gap: '12px' }}>
+                        {[
+                          { label: 'Status', value: 'Done', color: 'var(--success-600)' },
+                          { label: 'Files', value: pipelineResults?.file_count || '—', color: 'var(--primary-600)' },
+                          { label: 'Preprocessed', value: pipelineResults?.preprocessing_file_count || '—', color: 'var(--info-600)' },
+                          { label: 'Data Dir', value: pipelineResults?.data_dir ? 'Linked' : 'None', color: pipelineResults?.data_dir ? 'var(--success-600)' : 'var(--gray-400)' },
+                          { label: 'Output Dir', value: pipelineResults?.preprocessing_dir ? 'Ready' : 'None', color: pipelineResults?.preprocessing_dir ? 'var(--success-600)' : 'var(--gray-400)' },
+                        ].map((m, i) => (
+                          <div key={i} style={{ padding: '10px', background: 'var(--gray-50)', borderRadius: '8px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '20px', fontWeight: '700', color: m.color }}>{m.value}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--gray-500)', marginTop: '2px' }}>{m.label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Section 3: OUTPUT */}
           <div className="card" style={{ marginBottom: '24px' }}>
@@ -1307,11 +2202,11 @@ const UseCase = () => {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary btn-sm">
+                <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-2')} onClick={() => handleAction('action-2', 'Filter options coming soon', 'Filter options coming soon', 1500)} disabled={isButtonLoading('action-2')}>
                   <Icon name="filter" size={14} />
                   Filter
                 </button>
-                <button className="btn btn-secondary btn-sm">
+                <button className="btn btn-secondary btn-sm" onClick={() => handleExport('Results CSV')} disabled={isButtonLoading('export-results-csv')}>
                   <Icon name="download" size={14} />
                   Export
                 </button>
@@ -1366,7 +2261,7 @@ const UseCase = () => {
                       <td><span className="status-badge success">Approved</span></td>
                       <td>94.2%</td>
                       <td><span style={{ fontSize: '12px' }}>Credit Score, Income, Employment</span></td>
-                      <td><button className="btn btn-icon btn-sm btn-secondary"><Icon name="eye" size={14} /></button></td>
+                      <td><button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-3')} onClick={() => handleAction('action-3', 'Details view coming soon', 'Details view coming soon', 1500)} disabled={isButtonLoading('action-3')}><Icon name="eye" size={14} /></button></td>
                     </tr>
                     <tr>
                       <td style={{ fontWeight: 500 }}>C002</td>
@@ -1374,7 +2269,7 @@ const UseCase = () => {
                       <td><span className="status-badge danger">Rejected</span></td>
                       <td>87.5%</td>
                       <td><span style={{ fontSize: '12px' }}>Debt Ratio, Late Payments</span></td>
-                      <td><button className="btn btn-icon btn-sm btn-secondary"><Icon name="eye" size={14} /></button></td>
+                      <td><button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-4')} onClick={() => handleAction('action-4', 'Details view coming soon', 'Details view coming soon', 1500)} disabled={isButtonLoading('action-4')}><Icon name="eye" size={14} /></button></td>
                     </tr>
                     <tr>
                       <td style={{ fontWeight: 500 }}>C003</td>
@@ -1382,7 +2277,7 @@ const UseCase = () => {
                       <td><span className="status-badge success">Approved</span></td>
                       <td>96.1%</td>
                       <td><span style={{ fontSize: '12px' }}>Credit Score, Savings, Age</span></td>
-                      <td><button className="btn btn-icon btn-sm btn-secondary"><Icon name="eye" size={14} /></button></td>
+                      <td><button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-5')} onClick={() => handleAction('action-5', 'Details view coming soon', 'Details view coming soon', 1500)} disabled={isButtonLoading('action-5')}><Icon name="eye" size={14} /></button></td>
                     </tr>
                     <tr>
                       <td style={{ fontWeight: 500 }}>C004</td>
@@ -1390,7 +2285,7 @@ const UseCase = () => {
                       <td><span className="status-badge warning">Review</span></td>
                       <td>62.3%</td>
                       <td><span style={{ fontSize: '12px' }}>Self-Employed, Loan Amount</span></td>
-                      <td><button className="btn btn-icon btn-sm btn-secondary"><Icon name="eye" size={14} /></button></td>
+                      <td><button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-6')} onClick={() => handleAction('action-6', 'Details view coming soon', 'Details view coming soon', 1500)} disabled={isButtonLoading('action-6')}><Icon name="eye" size={14} /></button></td>
                     </tr>
                     <tr>
                       <td style={{ fontWeight: 500 }}>C005</td>
@@ -1398,7 +2293,7 @@ const UseCase = () => {
                       <td><span className="status-badge success">Approved</span></td>
                       <td>89.7%</td>
                       <td><span style={{ fontSize: '12px' }}>Income, Credit History</span></td>
-                      <td><button className="btn btn-icon btn-sm btn-secondary"><Icon name="eye" size={14} /></button></td>
+                      <td><button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-7')} onClick={() => handleAction('action-7', 'Details view coming soon', 'Details view coming soon', 1500)} disabled={isButtonLoading('action-7')}><Icon name="eye" size={14} /></button></td>
                     </tr>
                   </tbody>
                 </table>
@@ -1406,8 +2301,8 @@ const UseCase = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
                 <span style={{ fontSize: '13px', color: 'var(--gray-500)' }}>Showing 5 of 1,234 results</span>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <button className="btn btn-secondary btn-sm">Previous</button>
-                  <button className="btn btn-secondary btn-sm">Next</button>
+                  <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-8')} onClick={() => handleAction('action-8', 'Navigating to previous page', 'Navigating to previous page...', 1000)} disabled={isButtonLoading('action-8')}>{getButtonText('action-8', 'Previous', 'Loading...')}</button>
+                  <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-9')} onClick={() => handleAction('action-9', 'Navigating to next page', 'Navigating to next page...', 1000)} disabled={isButtonLoading('action-9')}>{getButtonText('action-9', 'Next', 'Loading...')}</button>
                 </div>
               </div>
             </div>
@@ -1575,11 +2470,11 @@ const UseCase = () => {
                           <button className="btn btn-icon btn-sm btn-secondary" title="View Details" onClick={() => handleViewTransactionDetails(txn)}>
                             <Icon name="eye" size={14} />
                           </button>
-                          <button className="btn btn-icon btn-sm btn-secondary" title="Download Results" onClick={() => handleDownloadResults(txn)}>
-                            <Icon name="download" size={14} />
+                          <button className="btn btn-icon btn-sm btn-secondary" title="Download Results" style={getButtonStyle(`download-${txn.id}`)} onClick={() => handleDownloadResults(txn)} disabled={isButtonLoading(`download-${txn.id}`)}>
+                            <Icon name={isButtonLoading(`download-${txn.id}`) ? 'clock' : 'download'} size={14} />
                           </button>
-                          <button className="btn btn-icon btn-sm btn-secondary" title="Re-run" onClick={() => handleRerunTransaction(txn)}>
-                            <Icon name="refresh" size={14} />
+                          <button className="btn btn-icon btn-sm btn-secondary" title="Re-run" style={getButtonStyle(`rerun-${txn.id}`)} onClick={() => handleRerunTransaction(txn)} disabled={isButtonLoading(`rerun-${txn.id}`)}>
+                            <Icon name={isButtonLoading(`rerun-${txn.id}`) ? 'clock' : 'refresh'} size={14} />
                           </button>
                         </div>
                       </td>
@@ -1591,11 +2486,11 @@ const UseCase = () => {
             <div className="card-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '13px', color: 'var(--gray-500)' }}>Showing 6 of 48 transactions</span>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => setNotification({ type: 'info', message: 'Loading previous page...' })}>Previous</button>
-                <button className="btn btn-secondary btn-sm">1</button>
-                <button className="btn btn-primary btn-sm">2</button>
-                <button className="btn btn-secondary btn-sm">3</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => setNotification({ type: 'info', message: 'Loading next page...' })}>Next</button>
+                <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-10')} onClick={() => handleAction('action-10', 'Loading previous page', 'Loading previous page...', 2000)} disabled={isButtonLoading('action-10')}>{getButtonText('action-10', 'Previous', 'Loading...')}</button>
+                <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-11')} onClick={() => handleAction('action-11', 'Page 1', 'Page 1', 1000)} disabled={isButtonLoading('action-11')}>{getButtonText('action-11', '1', 'Loading...')}</button>
+                <button className="btn btn-primary btn-sm" style={getButtonStyle('action-12')} onClick={() => handleAction('action-12', 'Page 2', 'Page 2', 1000)} disabled={isButtonLoading('action-12')}>{getButtonText('action-12', '2', 'Loading...')}</button>
+                <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-13')} onClick={() => handleAction('action-13', 'Page 3', 'Page 3', 1000)} disabled={isButtonLoading('action-13')}>{getButtonText('action-13', '3', 'Loading...')}</button>
+                <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-14')} onClick={() => handleAction('action-14', 'Loading next page', 'Loading next page...', 2000)} disabled={isButtonLoading('action-14')}>{getButtonText('action-14', 'Next', 'Loading...')}</button>
               </div>
             </div>
           </div>
@@ -1623,7 +2518,7 @@ const UseCase = () => {
                   <h3 className="card-title">Scheduled Jobs</h3>
                   <p className="card-subtitle">Automated pipeline executions</p>
                 </div>
-                <button className="btn btn-primary btn-sm">
+                <button className="btn btn-primary btn-sm" style={getButtonStyle('action-15')} onClick={() => handleAction('action-15', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-15')}>
                   <Icon name="plus" size={14} />
                   Add Schedule
                 </button>
@@ -1648,10 +2543,10 @@ const UseCase = () => {
                         {job.status === 'active' ? 'Active' : 'Paused'}
                       </span>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn btn-icon btn-sm btn-secondary">
+                        <button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-16')} onClick={() => handleAction('action-16', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-16')}>
                           <Icon name="edit" size={14} />
                         </button>
-                        <button className="btn btn-icon btn-sm btn-secondary">
+                        <button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-17')} onClick={() => handleAction('action-17', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-17')}>
                           <Icon name={job.status === 'active' ? 'pause' : 'play'} size={14} />
                         </button>
                       </div>
@@ -1667,7 +2562,7 @@ const UseCase = () => {
                   <h3 className="card-title">Trigger Conditions</h3>
                   <p className="card-subtitle">Event-based automation</p>
                 </div>
-                <button className="btn btn-secondary btn-sm">
+                <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-18')} onClick={() => handleAction('action-18', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-18')}>
                   <Icon name="plus" size={14} />
                   Add Trigger
                 </button>
@@ -1776,10 +2671,10 @@ const UseCase = () => {
                       </td>
                       <td>
                         <div style={{ display: 'flex', gap: '8px' }}>
-                          <button className="btn btn-icon btn-sm btn-secondary">
+                          <button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-19')} onClick={() => handleAction('action-19', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-19')}>
                             <Icon name="eye" size={14} />
                           </button>
-                          <button className="btn btn-icon btn-sm btn-secondary">
+                          <button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-20')} onClick={() => handleAction('action-20', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-20')}>
                             <Icon name="download" size={14} />
                           </button>
                         </div>
@@ -2177,18 +3072,173 @@ const UseCase = () => {
               </div>
             </div>
           </div>
+
+          {/* SR 11-7 Regulatory Risk Rating */}
+          <div className="card" style={{ marginTop: '24px' }}>
+            <div className="card-header" style={{ background: '#fef2f2' }}>
+              <h3 className="card-title" style={{ color: '#991b1b' }}>SR 11-7 Model Risk Management Report</h3>
+              <button className="btn btn-secondary btn-sm" onClick={fetchRegulatoryData}>
+                <Icon name="refresh" size={14} /> Refresh
+              </button>
+            </div>
+            <div className="card-body">
+              {/* Risk Rating */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px', padding: '20px', background: 'var(--gray-50)', borderRadius: '12px' }}>
+                <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--gray-600)' }}>Model Risk Rating:</div>
+                <div style={{
+                  padding: '8px 24px',
+                  borderRadius: '8px',
+                  fontWeight: '700',
+                  fontSize: '18px',
+                  background: (regulatoryData?.risk_rating || 'Medium') === 'High' ? '#fef2f2' : (regulatoryData?.risk_rating || 'Medium') === 'Low' ? '#f0fdf4' : '#fffbeb',
+                  color: (regulatoryData?.risk_rating || 'Medium') === 'High' ? '#991b1b' : (regulatoryData?.risk_rating || 'Medium') === 'Low' ? '#166534' : '#92400e',
+                  border: `2px solid ${(regulatoryData?.risk_rating || 'Medium') === 'High' ? '#fca5a5' : (regulatoryData?.risk_rating || 'Medium') === 'Low' ? '#86efac' : '#fcd34d'}`
+                }}>
+                  {regulatoryData?.risk_rating || 'Medium'}
+                </div>
+                <div style={{ marginLeft: 'auto', fontSize: '12px', color: 'var(--gray-500)' }}>
+                  Last assessed: {regulatoryData?.last_assessed || new Date().toISOString().split('T')[0]}
+                </div>
+              </div>
+
+              {/* Performance Metrics */}
+              <div style={{ marginBottom: '24px' }}>
+                <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--gray-700)' }}>Performance Metrics</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+                  {(regulatoryData?.performance_metrics || [
+                    { name: 'Model Accuracy', value: '95.2%', status: 'pass' },
+                    { name: 'AUC-ROC', value: '0.97', status: 'pass' },
+                    { name: 'Precision', value: '92.8%', status: 'pass' },
+                    { name: 'Recall', value: '89.1%', status: 'warning' }
+                  ]).map((metric, idx) => (
+                    <div key={idx} style={{ padding: '12px', background: metric.status === 'pass' ? 'var(--success-50)' : 'var(--warning-50)', borderRadius: '8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '20px', fontWeight: '700', color: metric.status === 'pass' ? 'var(--success-700)' : 'var(--warning-700)' }}>{metric.value}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--gray-500)', marginTop: '4px' }}>{metric.name}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Data Quality Assessment */}
+              <div style={{ marginBottom: '24px' }}>
+                <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--gray-700)' }}>Data Quality Assessment</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+                  {(regulatoryData?.data_quality || [
+                    { dimension: 'Completeness', score: 98, threshold: 95 },
+                    { dimension: 'Timeliness', score: 96, threshold: 90 },
+                    { dimension: 'Accuracy', score: 99, threshold: 95 }
+                  ]).map((item, idx) => (
+                    <div key={idx} style={{ padding: '12px', background: 'var(--gray-50)', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: '600', fontSize: '13px' }}>{item.dimension}</span>
+                        <span style={{ color: item.score >= item.threshold ? 'var(--success-600)' : 'var(--danger-600)', fontWeight: '700' }}>{item.score}%</span>
+                      </div>
+                      <div style={{ height: '6px', background: 'var(--gray-200)', borderRadius: '3px' }}>
+                        <div style={{ height: '100%', width: `${item.score}%`, background: item.score >= item.threshold ? 'var(--success-500)' : 'var(--danger-500)', borderRadius: '3px' }} />
+                      </div>
+                      <div style={{ fontSize: '10px', color: 'var(--gray-400)', marginTop: '4px' }}>Threshold: {item.threshold}%</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Monitoring Requirements */}
+              <div>
+                <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--gray-700)' }}>Monitoring Requirements</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {(regulatoryData?.monitoring_requirements || [
+                    { requirement: 'Monthly performance backtesting', frequency: 'Monthly', status: 'compliant' },
+                    { requirement: 'Quarterly model validation', frequency: 'Quarterly', status: 'compliant' },
+                    { requirement: 'Annual independent review', frequency: 'Annual', status: 'compliant' },
+                    { requirement: 'Real-time drift monitoring', frequency: 'Continuous', status: 'compliant' },
+                    { requirement: 'Bias and fairness testing', frequency: 'Quarterly', status: 'review' }
+                  ]).map((item, idx) => (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', background: 'var(--gray-50)', borderRadius: '8px' }}>
+                      <span style={{ color: item.status === 'compliant' ? 'var(--success-600)' : 'var(--warning-600)' }}>
+                        <Icon name={item.status === 'compliant' ? 'check' : 'alert-triangle'} size={16} />
+                      </span>
+                      <span style={{ flex: 1, fontSize: '13px' }}>{item.requirement}</span>
+                      <span style={{ fontSize: '11px', color: 'var(--gray-500)', background: 'var(--gray-100)', padding: '2px 8px', borderRadius: '4px' }}>{item.frequency}</span>
+                      <span className={`status-badge ${item.status === 'compliant' ? 'success' : 'warning'}`} style={{ fontSize: '11px' }}>
+                        {item.status === 'compliant' ? 'Compliant' : 'Under Review'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </>
       )}
 
       {activeTab === 'automation' && (
         <div className="automation-tab-content">
+          {/* Data Path & Upload for Automation */}
+          <div className="card" style={{ marginBottom: '24px' }}>
+            <div className="card-header" style={{ background: 'var(--primary-50)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <Icon name="folder" size={20} />
+                <div>
+                  <h3 className="card-title">Data Source</h3>
+                  <p className="card-subtitle">Linked data folder and upload</p>
+                </div>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={fetchDataPath} disabled={dataPathLoading}>
+                <Icon name="refresh" size={14} /> Refresh
+              </button>
+            </div>
+            <div className="card-body">
+              <div className="grid grid-cols-2" style={{ gap: '20px' }}>
+                <div>
+                  {isPipelineRoute && pipelineUc?.path && (
+                    <div style={{ padding: '10px 14px', background: 'var(--gray-50)', borderRadius: '8px', border: '1px solid var(--gray-200)', marginBottom: '8px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--gray-500)', marginBottom: '2px' }}>Use Case Path</div>
+                      <code style={{ fontSize: '12px', color: 'var(--primary-700)', wordBreak: 'break-all' }}>5_Star_UseCases/{pipelineUc.path}</code>
+                    </div>
+                  )}
+                  {dataPathInfo?.data_dir && (
+                    <div style={{ padding: '10px 14px', background: 'var(--success-50)', borderRadius: '8px', border: '1px solid var(--success-200)', marginBottom: '8px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--success-700)', marginBottom: '2px' }}>Data Directory</div>
+                      <code style={{ fontSize: '12px', color: 'var(--success-800)', wordBreak: 'break-all' }}>{dataPathInfo.data_dir}</code>
+                      <span style={{ marginLeft: '8px', fontSize: '11px', color: 'var(--success-600)' }}>{dataPathInfo.files.length} file(s) | {formatSize(dataPathInfo.total_size)}</span>
+                    </div>
+                  )}
+                  {dataPathInfo?.preprocessing_dir && (
+                    <div style={{ padding: '10px 14px', background: 'var(--warning-50)', borderRadius: '8px', border: '1px solid var(--warning-200)' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--warning-700)', marginBottom: '2px' }}>Preprocessing Output</div>
+                      <code style={{ fontSize: '12px', color: 'var(--warning-800)', wordBreak: 'break-all' }}>{dataPathInfo.preprocessing_dir}</code>
+                    </div>
+                  )}
+                  {dataPathInfo && !dataPathInfo.has_data && (
+                    <div style={{ padding: '10px 14px', background: 'var(--danger-50)', borderRadius: '8px', border: '1px solid var(--danger-200)' }}>
+                      <span style={{ fontSize: '12px', color: 'var(--danger-700)' }}>No data found — upload files to get started</span>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={(e) => { e.preventDefault(); handleFileUpload(e.dataTransfer.files); }}
+                    style={{ border: `2px dashed ${dragOver ? 'var(--primary-500)' : 'var(--gray-300)'}`, borderRadius: '8px', padding: '24px', textAlign: 'center', background: dragOver ? 'var(--primary-50)' : 'var(--gray-50)', cursor: uploadingFile ? 'wait' : 'pointer', opacity: uploadingFile ? 0.6 : 1 }}
+                  >
+                    <Icon name="upload" size={28} />
+                    <p style={{ marginTop: '8px', color: 'var(--gray-600)', fontSize: '13px' }}>{uploadingFile ? 'Uploading...' : 'Drag & drop or browse'}</p>
+                    <input type="file" id="auto-file-input" style={{ display: 'none' }} accept=".csv,.json,.xlsx,.xls,.parquet,.txt" multiple onChange={(e) => handleFileUpload(e.target.files)} disabled={uploadingFile} />
+                    <button className="btn btn-secondary btn-sm" style={{ marginTop: '8px' }} onClick={() => document.getElementById('auto-file-input').click()} disabled={uploadingFile}>Browse Files</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Automation Overview */}
           <div className="grid grid-cols-4" style={{ marginBottom: '24px' }}>
             {[
               { label: 'Automated Steps', value: '12', icon: 'pipelines', color: 'var(--primary-500)' },
               { label: 'Manual Steps', value: '2', icon: 'user', color: 'var(--warning-500)' },
               { label: 'Automation Rate', value: '85.7%', icon: 'zap', color: 'var(--success-500)' },
-              { label: 'Avg. Run Time', value: '45 min', icon: 'clock', color: 'var(--purple-500)' },
+              { label: 'Pipeline Status', value: automationStatus === 'running' ? `${automationProgress}%` : automationStatus === 'completed' ? 'Done' : 'Ready', icon: 'clock', color: automationRunning ? 'var(--warning-500)' : 'var(--success-500)' },
             ].map((stat, i) => (
               <div key={i} className="stat-card">
                 <div className="stat-icon" style={{ background: `${stat.color}20`, color: stat.color }}>
@@ -2202,16 +3252,122 @@ const UseCase = () => {
             ))}
           </div>
 
+          {/* Pipeline Progress Flow — Visible during run */}
+          {(automationRunning || automationStatus === 'completed' || automationStatus === 'failed') && (
+            <div className="card" style={{ marginBottom: '24px', border: automationRunning ? '2px solid var(--warning-300)' : automationStatus === 'completed' ? '2px solid var(--success-300)' : '2px solid var(--danger-300)' }}>
+              <div className="card-header" style={{ background: automationRunning ? 'var(--warning-50)' : automationStatus === 'completed' ? 'var(--success-50)' : 'var(--danger-50)' }}>
+                <h3 className="card-title">{automationRunning ? 'Pipeline Running...' : automationStatus === 'completed' ? 'Pipeline Completed' : 'Pipeline Failed'}</h3>
+                <span style={{ fontFamily: 'monospace', fontSize: '13px' }}>Job #{automationJobId || '—'}</span>
+              </div>
+              <div className="card-body">
+                {/* Progress Bar */}
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '13px' }}>
+                    <span>Progress</span>
+                    <span style={{ fontWeight: '600' }}>{automationProgress}%</span>
+                  </div>
+                  <div style={{ width: '100%', height: '10px', background: 'var(--gray-200)', borderRadius: '5px', overflow: 'hidden' }}>
+                    <div style={{ width: `${automationProgress}%`, height: '100%', background: automationRunning ? 'var(--warning-500)' : automationStatus === 'completed' ? 'var(--success-500)' : 'var(--danger-500)', borderRadius: '5px', transition: 'width 0.5s ease' }} />
+                  </div>
+                </div>
+                {/* Step-by-step flow */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {[
+                    { name: 'Data Split', pct: 10 },
+                    { name: 'Noise Removal', pct: 20 },
+                    { name: 'Model Training', pct: 40 },
+                    { name: 'Evaluation', pct: 55 },
+                    { name: 'Ensemble', pct: 65 },
+                    { name: 'Benchmarking', pct: 72 },
+                    { name: 'AI Governance', pct: 78 },
+                    { name: 'Chunking', pct: 82 },
+                    { name: 'Embedding', pct: 87 },
+                    { name: 'Vector DB', pct: 92 },
+                    { name: 'RAG Eval', pct: 96 },
+                    { name: 'Report', pct: 100 },
+                  ].map((step, i) => {
+                    const done = automationProgress >= step.pct;
+                    const active = automationProgress >= (i > 0 ? [10,20,40,55,65,72,78,82,87,92,96,100][i-1] : 0) && automationProgress < step.pct;
+                    return (
+                      <div key={i} style={{
+                        padding: '6px 12px', borderRadius: '6px', fontSize: '11px', fontWeight: '500',
+                        background: done ? 'var(--success-100)' : active ? 'var(--warning-100)' : 'var(--gray-100)',
+                        border: `1px solid ${done ? 'var(--success-300)' : active ? 'var(--warning-300)' : 'var(--gray-200)'}`,
+                        color: done ? 'var(--success-700)' : active ? 'var(--warning-700)' : 'var(--gray-500)',
+                      }}>
+                        {done ? '✓ ' : active ? '▶ ' : ''}{step.name}
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Metrics shown after completion */}
+                {automationStatus === 'completed' && (
+                  <div style={{ marginTop: '20px' }}>
+                    {pipelineResults?.has_results && pipelineResults.summary ? (
+                      <div className="grid grid-cols-4" style={{ gap: '16px' }}>
+                        {[
+                          { label: 'Rows', value: (pipelineResults.summary.total_rows || pipelineResults.metrics?.total_rows || 0).toLocaleString(), color: 'var(--primary-600)' },
+                          { label: 'Columns', value: pipelineResults.summary.total_columns || pipelineResults.metrics?.total_columns || '—', color: 'var(--success-600)' },
+                          { label: 'Data Quality', value: pipelineResults.summary.data_quality_score ? `${pipelineResults.summary.data_quality_score}%` : '—', color: 'var(--purple-600)' },
+                          { label: 'Missing %', value: pipelineResults.summary.avg_missing_pct != null ? `${pipelineResults.summary.avg_missing_pct}%` : '—', color: 'var(--warning-600)' },
+                        ].map((m, i) => (
+                          <div key={i} style={{ padding: '12px', background: 'var(--gray-50)', borderRadius: '8px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '22px', fontWeight: '700', color: m.color }}>{m.value}</div>
+                            <div style={{ fontSize: '12px', color: 'var(--gray-500)', marginTop: '4px' }}>{m.label}</div>
+                          </div>
+                        ))}
+                        {(pipelineResults.summary.target_column || pipelineResults.metrics?.target_column) && (
+                          <div style={{ gridColumn: 'span 4', padding: '10px 14px', background: 'var(--primary-50)', borderRadius: '8px', display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '12px', color: 'var(--primary-700)' }}>Target: <strong>{pipelineResults.summary.target_column || pipelineResults.metrics?.target_column}</strong></span>
+                            {pipelineResults.summary.class_imbalance_ratio && (
+                              <span style={{ fontSize: '12px', color: 'var(--gray-600)' }}>
+                                Imbalance Ratio: {pipelineResults.summary.class_imbalance_ratio}:1
+                              </span>
+                            )}
+                            {pipelineResults.summary.n_feature_suggestions > 0 && (
+                              <span style={{ fontSize: '12px', color: 'var(--primary-600)' }}>
+                                {pipelineResults.summary.n_feature_suggestions} feature suggestions
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4" style={{ gap: '16px' }}>
+                        {[
+                          { label: 'Status', value: 'Complete', color: 'var(--success-600)' },
+                          { label: 'Pipeline', value: 'Finished', color: 'var(--primary-600)' },
+                          { label: 'Data Files', value: dataPathInfo?.files?.length || '—', color: 'var(--purple-600)' },
+                          { label: 'Output Files', value: dataPathInfo?.preprocessing_files?.length || '—', color: 'var(--gray-600)' },
+                        ].map((m, i) => (
+                          <div key={i} style={{ padding: '12px', background: 'var(--gray-50)', borderRadius: '8px', textAlign: 'center' }}>
+                            <div style={{ fontSize: '22px', fontWeight: '700', color: m.color }}>{m.value}</div>
+                            <div style={{ fontSize: '12px', color: 'var(--gray-500)', marginTop: '4px' }}>{m.label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* End-to-End Pipeline Flow */}
           <div className="card" style={{ marginBottom: '24px' }}>
             <div className="card-header">
               <h3 className="card-title">End-to-End Pipeline Flow</h3>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => handleExport('Pipeline Diagram')}>
+                <button className="btn btn-secondary btn-sm" onClick={() => handleExport('Pipeline Diagram')} disabled={isButtonLoading('export-pipeline-diagram') || automationRunning}>
                   <Icon name="download" size={14} /> Export
                 </button>
-                <button className="btn btn-primary btn-sm" onClick={handleRunPipeline}>
-                  <Icon name="play" size={14} /> Run Pipeline
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => handleRunAutomation('full')}
+                  disabled={automationRunning}
+                  style={{ opacity: automationRunning ? 0.6 : 1, cursor: automationRunning ? 'not-allowed' : 'pointer', minWidth: '140px' }}
+                >
+                  <Icon name="play" size={14} /> {automationRunning ? `Running ${automationProgress}%` : 'Run Pipeline'}
                 </button>
               </div>
             </div>
@@ -3004,6 +4160,23 @@ const UseCase = () => {
               </div>
             </div>
           </div>
+
+          {/* Per-Use-Case Analysis — auto-discovered dataset */}
+          {datasetId ? (
+            <>
+              <DataImbalanceAnalysis datasetId={datasetId} />
+              <FeatureEngineering datasetId={datasetId} />
+              <ModelRobustnessPanel datasetId={datasetId} />
+              <OperationalIntelligence datasetId={datasetId} />
+              <CoverageSegmentation datasetId={datasetId} />
+              <GovernanceCompliance datasetId={datasetId} />
+            </>
+          ) : (
+            <div className="card" style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+              <Icon name="database" size={32} style={{ marginBottom: '0.5rem', opacity: 0.5 }} />
+              <p style={{ margin: 0 }}>No dataset found for this use case. Upload a CSV file to enable data analysis.</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -3181,8 +4354,8 @@ const UseCase = () => {
                             <Icon name="download" size={14} />
                           </button>
                           {v.status !== 'production' && (
-                            <button className="btn btn-icon btn-sm btn-primary" title="Rollback" onClick={() => setNotification({ type: 'info', message: `Rolling back to ${v.version}...` })}>
-                              <Icon name="refresh" size={14} />
+                            <button className="btn btn-icon btn-sm btn-primary" title="Rollback" style={getButtonStyle(`rollback-${v.version}`)} onClick={() => handleAction(`rollback-${v.version}`, 'Rollback', `Rolling back to ${v.version}`, 3000)} disabled={isButtonLoading(`rollback-${v.version}`)}>
+                              <Icon name={isButtonLoading(`rollback-${v.version}`) ? 'clock' : 'refresh'} size={14} />
                             </button>
                           )}
                         </div>
@@ -3360,7 +4533,7 @@ const UseCase = () => {
                       )}
                     </div>
                   ))}
-                  <button className="btn btn-primary" style={{ marginTop: '16px' }}>
+                  <button className="btn btn-primary" style={{ marginTop: '16px' }} onClick={() => handleSimulate()}>
                     <Icon name="play" size={16} /> Run Simulation
                   </button>
                 </div>
@@ -3686,11 +4859,11 @@ const UseCase = () => {
             <div className="card-header">
               <h3 className="card-title">Test Categories Overview</h3>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => handleExport('Test Report')}>
+                <button className="btn btn-secondary btn-sm" onClick={() => handleExport('Test Report')} disabled={isButtonLoading('export-test-report')}>
                   <Icon name="download" size={14} /> Export Report
                 </button>
-                <button className="btn btn-primary btn-sm" onClick={() => handleRunJob('All Tests')}>
-                  <Icon name="play" size={14} /> Run All Tests
+                <button className="btn btn-primary btn-sm" onClick={() => handleRunJob('All Tests')} disabled={runningJobs['All Tests']} style={{ opacity: runningJobs['All Tests'] ? 0.7 : 1, cursor: runningJobs['All Tests'] ? 'not-allowed' : 'pointer' }}>
+                  <Icon name={runningJobs['All Tests'] ? 'clock' : 'play'} size={14} /> {runningJobs['All Tests'] ? '⏳ Running...' : 'Run All Tests'}
                 </button>
               </div>
             </div>
@@ -3730,8 +4903,8 @@ const UseCase = () => {
                       <td><span className={`status-badge ${suite.status === 'passed' ? 'success' : 'danger'}`}>{suite.status === 'passed' ? 'Passed' : 'Failed'}</span></td>
                       <td>
                         <div style={{ display: 'flex', gap: '4px' }}>
-                          <button className="btn btn-icon btn-sm btn-secondary" onClick={() => handleRunJob(suite.name)}>
-                            <Icon name="play" size={12} />
+                          <button className="btn btn-icon btn-sm btn-secondary" onClick={() => handleRunJob(suite.name)} disabled={runningJobs[suite.name]} style={{ opacity: runningJobs[suite.name] ? 0.7 : 1 }}>
+                            <Icon name={runningJobs[suite.name] ? 'clock' : 'play'} size={12} />
                           </button>
                           <button className="btn btn-icon btn-sm btn-secondary" onClick={() => handleViewJob({ name: suite.name, status: suite.status, schedule: 'On-demand', lastRun: 'Today', duration: suite.duration })}>
                             <Icon name="eye" size={12} />
@@ -3841,8 +5014,8 @@ const UseCase = () => {
               </h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <span className="status-badge success">15/15 Passed</span>
-                <button className="btn btn-sm btn-secondary" onClick={() => handleRunJob('Smoke Tests')}>
-                  <Icon name="play" size={14} /> Run Smoke Tests
+                <button className="btn btn-sm btn-secondary" onClick={() => handleRunJob('Smoke Tests')} disabled={runningJobs['Smoke Tests']} style={{ opacity: runningJobs['Smoke Tests'] ? 0.7 : 1 }}>
+                  <Icon name={runningJobs['Smoke Tests'] ? 'clock' : 'play'} size={14} /> {runningJobs['Smoke Tests'] ? '⏳ Running...' : 'Run Smoke Tests'}
                 </button>
               </div>
             </div>
@@ -3957,8 +5130,8 @@ const UseCase = () => {
                         <span style={{ fontSize: '12px' }}>{item.tests} tests</span>
                         <span style={{ fontSize: '12px', color: 'var(--success-600)' }}>{item.coverage}</span>
                         <span style={{ fontSize: '11px', color: 'var(--gray-500)' }}>{item.lastRun}</span>
-                        <button className="btn btn-icon btn-sm btn-secondary" onClick={() => handleRunJob(item.category)}>
-                          <Icon name="play" size={12} />
+                        <button className="btn btn-icon btn-sm btn-secondary" onClick={() => handleRunJob(item.category)} disabled={runningJobs[item.category]} style={{ opacity: runningJobs[item.category] ? 0.7 : 1 }}>
+                          <Icon name={runningJobs[item.category] ? 'clock' : 'play'} size={12} />
                         </button>
                       </div>
                     </div>
@@ -4049,7 +5222,7 @@ const UseCase = () => {
               <h3 className="card-title">Model Versions</h3>
               <p className="card-subtitle">Version history and deployment status</p>
             </div>
-            <button className="btn btn-primary btn-sm">
+            <button className="btn btn-primary btn-sm" style={getButtonStyle('action-21')} onClick={() => handleAction('action-21', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-21')}>
               <Icon name="upload" size={14} />
               Deploy New Version
             </button>
@@ -4078,11 +5251,11 @@ const UseCase = () => {
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn btn-icon btn-sm btn-secondary">
+                        <button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle('action-22')} onClick={() => handleAction('action-22', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-22')}>
                           <Icon name="eye" size={14} />
                         </button>
                         {v.status !== 'production' && (
-                          <button className="btn btn-sm btn-secondary">
+                          <button className="btn btn-sm btn-secondary" style={getButtonStyle('action-23')} onClick={() => handleAction('action-23', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-23')}>
                             Rollback
                           </button>
                         )}
@@ -4112,8 +5285,8 @@ const UseCase = () => {
             <div className="card-header" style={{ background: 'var(--primary-50)' }}>
               <h3 className="card-title">Demo Flow Steps</h3>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary btn-sm"><Icon name="refresh" size={14} /> Reset</button>
-                <button className="btn btn-primary btn-sm"><Icon name="play" size={14} /> Play All</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => { setSimulationData([]); setNotification({ type: 'info', message: 'Demo reset' }); }}><Icon name="refresh" size={14} /> Reset</button>
+                <button className="btn btn-primary btn-sm" onClick={() => handleSimulate()}><Icon name="play" size={14} /> Play All</button>
               </div>
             </div>
             <div className="card-body">
@@ -4444,7 +5617,7 @@ const UseCase = () => {
                     </div>
                     <div style={{ fontWeight: 600, marginBottom: '4px' }}>{item.role}</div>
                     <div style={{ fontSize: '12px', color: 'var(--gray-500)', marginBottom: '12px' }}>{item.report}</div>
-                    <button className="btn btn-sm btn-secondary" style={{ width: '100%' }}>
+                    <button className="btn btn-sm btn-secondary" style={{ width: '100%' }} onClick={() => handleExport('Report')} disabled={isButtonLoading('export-report')}>
                       <Icon name="download" size={12} /> Generate
                     </button>
                   </div>
@@ -4913,7 +6086,7 @@ const UseCase = () => {
                     <span style={{ fontWeight: 500 }}>{item.format}</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <span style={{ fontSize: '12px', color: 'var(--gray-500)' }}>{item.size}</span>
-                      <button className="btn btn-sm btn-secondary"><Icon name="download" size={12} /></button>
+                      <button className="btn btn-sm btn-secondary" onClick={() => handleExport('File')} disabled={isButtonLoading('export-file')}><Icon name="download" size={12} /></button>
                     </div>
                   </div>
                 ))}
@@ -5044,37 +6217,310 @@ const UseCase = () => {
         </div>
       )}
 
-      {activeTab === 'problem' && (
-        <div className="problem-tab-content">
-          {/* Business Problem */}
-          <div className="card" style={{ marginBottom: '24px' }}>
-            <div className="card-header">
-              <h3 className="card-title">Business Problem Statement</h3>
+      {activeTab === 'problem' && (() => {
+        const ucName = useCase?.name || 'Use Case';
+        const ucDomain = pipelineUc?.domain || 'Banking';
+        const ucDept = pipelineUc?.department || 'Operations';
+        const ucAiType = pipelineUc?.aiTypeLabel || 'AI';
+        const ucAccuracy = useCase?.accuracy || 95;
+
+        // Dynamic problem data based on use case domain/name
+        const isFraud = ucName.toLowerCase().includes('fraud') || ucName.toLowerCase().includes('aml') || ucName.toLowerCase().includes('anomaly');
+        const isCredit = ucName.toLowerCase().includes('credit') || ucName.toLowerCase().includes('loan') || ucName.toLowerCase().includes('lending');
+        const isRisk = ucName.toLowerCase().includes('risk') || ucName.toLowerCase().includes('compliance');
+        const isCustomer = ucName.toLowerCase().includes('customer') || ucName.toLowerCase().includes('churn') || ucName.toLowerCase().includes('sentiment');
+
+        const problemData = isFraud ? {
+          statement: 'Financial institutions lose billions annually to sophisticated fraud schemes. Legacy rule-based systems generate excessive false positives (15-25%), causing customer friction, while simultaneously missing novel fraud patterns. Manual investigation queues create 24-48 hour delays, allowing fraudsters to exploit time windows.',
+          issues: [
+            { id: 'ISS-01', title: 'High False Positive Rate', severity: 'critical', impact: '$4.2M/yr in customer friction costs', rootCause: 'Static rule thresholds cannot adapt to evolving transaction patterns', aiSolution: 'ML ensemble with dynamic threshold optimization' },
+            { id: 'ISS-02', title: 'Novel Fraud Pattern Blind Spots', severity: 'critical', impact: '$8.5M/yr in undetected fraud losses', rootCause: 'Rule-based systems only detect known patterns, zero-day fraud bypasses all rules', aiSolution: 'Anomaly detection + graph neural networks for pattern discovery' },
+            { id: 'ISS-03', title: 'Manual Review Bottleneck', severity: 'high', impact: '48-hour average investigation time', rootCause: 'Analysts manually review 5,000+ alerts/day with no prioritization', aiSolution: 'AI-powered alert triage with risk scoring and auto-disposition' },
+            { id: 'ISS-04', title: 'Cross-Channel Fraud Gaps', severity: 'high', impact: '32% of fraud spans multiple channels', rootCause: 'Siloed monitoring per channel (card, wire, ACH) misses linked attacks', aiSolution: 'Unified transaction graph with cross-channel entity resolution' },
+            { id: 'ISS-05', title: 'Real-Time Decision Latency', severity: 'medium', impact: '3-5 second authorization delays', rootCause: 'Sequential rule evaluation with database lookups per transaction', aiSolution: 'In-memory feature store + sub-100ms ML inference pipeline' },
+            { id: 'ISS-06', title: 'Regulatory Reporting Gaps', severity: 'medium', impact: 'SAR filing delays averaging 12 days', rootCause: 'Manual evidence gathering and narrative generation', aiSolution: 'Automated SAR narrative generation with evidence compilation' },
+          ],
+          processSteps: [
+            { phase: 'Ingest', label: 'Transaction Stream', detail: 'Real-time Kafka ingestion from card networks, wire, ACH, P2P', status: 'automated' },
+            { phase: 'Enrich', label: 'Feature Engineering', detail: '450+ features: velocity, geo-location, device fingerprint, merchant category', status: 'automated' },
+            { phase: 'Score', label: 'ML Risk Scoring', detail: 'Ensemble model (XGBoost + LSTM + Graph NN) produces fraud probability', status: 'automated' },
+            { phase: 'Decide', label: 'Decision Engine', detail: 'Dynamic threshold + business rules determine block/allow/review', status: 'automated' },
+            { phase: 'Review', label: 'Alert Triage', detail: 'AI-prioritized queue with SHAP explanations for analyst review', status: 'human-in-loop' },
+            { phase: 'Act', label: 'Case Management', detail: 'Automated SAR filing, account actions, customer notifications', status: 'automated' },
+            { phase: 'Learn', label: 'Feedback Loop', detail: 'Analyst decisions feed back into model retraining pipeline', status: 'automated' },
+          ],
+          rootCauses: [
+            { category: 'Data', cause: 'Fragmented data across channels', why: 'Legacy systems built per product line', fix: 'Unified data lake with real-time CDC' },
+            { category: 'Model', cause: 'Static rule thresholds', why: 'Rules written years ago, never updated', fix: 'Self-tuning ML models with drift detection' },
+            { category: 'Process', cause: 'Sequential manual review', why: 'No prioritization or automation', fix: 'AI triage with auto-disposition for low-risk' },
+            { category: 'Technology', cause: 'Batch processing delays', why: 'Overnight ETL jobs, no streaming', fix: 'Real-time streaming with Apache Kafka + Flink' },
+            { category: 'People', cause: 'Analyst fatigue from alert volume', why: '85% false positive rate overwhelms team', fix: 'Reduce alerts 70% with ML pre-filtering' },
+          ],
+          kpis: { accuracy: { before: '72%', after: `${ucAccuracy}%` }, falsePositive: { before: '15%', after: '2.1%' }, latency: { before: '48 hrs', after: '23ms' }, cost: { before: '$12M/yr losses', after: '$4.2M/yr' }, throughput: { before: '500 txn/sec', after: '50,000 txn/sec' } },
+        } : isCredit ? {
+          statement: 'Credit underwriting relies on manual assessment with limited data signals, resulting in inconsistent decisions, 5-7 day processing times, and default rates 30% above industry benchmarks. Creditworthy applicants are rejected due to thin-file bias, while risky borrowers pass outdated scoring models.',
+          issues: [
+            { id: 'ISS-01', title: 'Inconsistent Underwriting Decisions', severity: 'critical', impact: '$6.2M/yr from suboptimal lending', rootCause: 'Different analysts apply subjective criteria to similar applications', aiSolution: 'Standardized ML scoring with consistent feature weighting' },
+            { id: 'ISS-02', title: 'Thin-File Applicant Rejection', severity: 'critical', impact: '35% qualified applicants rejected', rootCause: 'Traditional models require 3+ years credit history', aiSolution: 'Alternative data scoring (utility, rent, bank transactions)' },
+            { id: 'ISS-03', title: 'Slow Processing Times', severity: 'high', impact: '40% applicant drop-off rate', rootCause: 'Manual document review and verification steps', aiSolution: 'OCR + NLP for automated document processing' },
+            { id: 'ISS-04', title: 'High Default Rate', severity: 'high', impact: '4.8% default vs 3.2% industry avg', rootCause: 'Models miss behavioral signals and market conditions', aiSolution: 'Real-time macro-economic feature integration + behavioral scoring' },
+            { id: 'ISS-05', title: 'Fair Lending Compliance Risk', severity: 'high', impact: 'Potential regulatory penalties', rootCause: 'Opaque decision-making without bias testing', aiSolution: 'Explainable AI with fairness constraints and adverse action reasons' },
+            { id: 'ISS-06', title: 'Portfolio Concentration Risk', severity: 'medium', impact: 'Over-exposure to specific segments', rootCause: 'No real-time portfolio monitoring during origination', aiSolution: 'Dynamic portfolio-aware decisioning with concentration limits' },
+          ],
+          processSteps: [
+            { phase: 'Apply', label: 'Application Intake', detail: 'Multi-channel application with OCR document extraction', status: 'automated' },
+            { phase: 'Verify', label: 'Identity & Income Verification', detail: 'Automated KYC, bank statement analysis, employment verification', status: 'automated' },
+            { phase: 'Score', label: 'Credit Risk Scoring', detail: 'Ensemble: FICO + alternative data + behavioral ML model', status: 'automated' },
+            { phase: 'Price', label: 'Risk-Based Pricing', detail: 'Dynamic rate optimization based on risk tier and market conditions', status: 'automated' },
+            { phase: 'Decide', label: 'Underwriting Decision', detail: 'Auto-approve/decline with human review for edge cases', status: 'human-in-loop' },
+            { phase: 'Fund', label: 'Loan Origination', detail: 'Automated document generation, e-signature, funding', status: 'automated' },
+            { phase: 'Monitor', label: 'Portfolio Monitoring', detail: 'Continuous credit behavior monitoring and early warning', status: 'automated' },
+          ],
+          rootCauses: [
+            { category: 'Data', cause: 'Limited credit signals for thin-file', why: 'Only traditional bureau data used', fix: 'Alternative data: utility, rent, cashflow analytics' },
+            { category: 'Model', cause: 'Outdated scorecards', why: 'Models trained on pre-pandemic data', fix: 'Continuous retraining with drift detection' },
+            { category: 'Process', cause: 'Manual document review', why: 'No OCR/NLP automation', fix: 'AI-powered document extraction and verification' },
+            { category: 'Technology', cause: 'Batch decisioning overnight', why: 'Legacy core banking limitations', fix: 'Real-time decisioning API with sub-second response' },
+            { category: 'People', cause: 'Subjective analyst judgment', why: 'No standardized scoring framework', fix: 'ML-driven consistent scoring with explainability' },
+          ],
+          kpis: { accuracy: { before: '68%', after: `${ucAccuracy}%` }, falsePositive: { before: '35%', after: '8%' }, latency: { before: '5-7 days', after: '< 1 min' }, cost: { before: '$180/application', after: '$12/application' }, throughput: { before: '200/day', after: '10,000/day' } },
+        } : isRisk ? {
+          statement: 'Enterprise risk assessment relies on quarterly reports and backward-looking metrics, leaving the organization blind to emerging risks. Siloed risk data across departments creates inconsistent views, while manual stress testing takes weeks and cannot model complex scenario interactions.',
+          issues: [
+            { id: 'ISS-01', title: 'Reactive Risk Management', severity: 'critical', impact: '$15M in unexpected losses last year', rootCause: 'Risk metrics are backward-looking, updated quarterly', aiSolution: 'Real-time risk monitoring with predictive early warning signals' },
+            { id: 'ISS-02', title: 'Siloed Risk Data', severity: 'critical', impact: 'Inconsistent risk views across departments', rootCause: 'Each department maintains separate risk databases', aiSolution: 'Unified risk data lake with entity resolution' },
+            { id: 'ISS-03', title: 'Manual Stress Testing', severity: 'high', impact: '6-8 weeks per stress test cycle', rootCause: 'Spreadsheet-based scenario modeling', aiSolution: 'Automated Monte Carlo simulation with ML scenario generation' },
+            { id: 'ISS-04', title: 'Compliance Reporting Delays', severity: 'high', impact: 'Regulatory penalty risk', rootCause: 'Manual data aggregation from multiple systems', aiSolution: 'Automated regulatory report generation' },
+            { id: 'ISS-05', title: 'Inadequate Capital Allocation', severity: 'medium', impact: '$50M over-reserved capital', rootCause: 'Conservative buffers due to model uncertainty', aiSolution: 'ML-optimized capital models with confidence intervals' },
+          ],
+          processSteps: [
+            { phase: 'Collect', label: 'Risk Data Aggregation', detail: 'Unified ingestion from market, credit, operational, and liquidity sources', status: 'automated' },
+            { phase: 'Model', label: 'Risk Factor Modeling', detail: 'ML models for PD, LGD, EAD with macro-economic features', status: 'automated' },
+            { phase: 'Simulate', label: 'Stress Testing', detail: 'Monte Carlo simulation with AI-generated adverse scenarios', status: 'automated' },
+            { phase: 'Assess', label: 'Risk Assessment', detail: 'Portfolio-level VaR, CVaR, expected shortfall calculations', status: 'automated' },
+            { phase: 'Report', label: 'Regulatory Reporting', detail: 'Automated Basel III/IV, CCAR, DFAST report generation', status: 'automated' },
+            { phase: 'Mitigate', label: 'Risk Mitigation', detail: 'AI-recommended hedging strategies and limit adjustments', status: 'human-in-loop' },
+          ],
+          rootCauses: [
+            { category: 'Data', cause: 'Siloed risk databases', why: 'Departmental systems never integrated', fix: 'Enterprise risk data lake with real-time sync' },
+            { category: 'Model', cause: 'Linear models miss tail risk', why: 'Gaussian assumptions in legacy VaR', fix: 'Non-parametric ML models with fat-tail distributions' },
+            { category: 'Process', cause: 'Quarterly risk reviews', why: 'Manual aggregation takes weeks', fix: 'Real-time dashboards with automated alerts' },
+            { category: 'Technology', cause: 'Spreadsheet-based modeling', why: 'No scalable compute for simulations', fix: 'Cloud-native Monte Carlo with GPU acceleration' },
+          ],
+          kpis: { accuracy: { before: '75%', after: `${ucAccuracy}%` }, falsePositive: { before: '20%', after: '5%' }, latency: { before: '6 weeks', after: '< 1 hour' }, cost: { before: '$50M over-reserved', after: '$12M optimized' }, throughput: { before: '4 tests/yr', after: '1,000+ scenarios/day' } },
+        } : {
+          statement: `Current ${ucDomain.toLowerCase()} operations rely on manual processes with limited data-driven decision making. This results in operational inefficiencies, inconsistent outcomes, delayed responses, and inability to scale with business growth while meeting regulatory requirements.`,
+          issues: [
+            { id: 'ISS-01', title: 'Manual Processing Bottleneck', severity: 'critical', impact: '70% of analyst time on repetitive tasks', rootCause: 'No automation in core workflow steps', aiSolution: 'End-to-end ML pipeline with automated decision support' },
+            { id: 'ISS-02', title: 'Inconsistent Decision Quality', severity: 'critical', impact: '22% variance across analysts', rootCause: 'Subjective criteria with no standardized scoring', aiSolution: 'ML-based consistent scoring with calibrated confidence' },
+            { id: 'ISS-03', title: 'Slow Response Times', severity: 'high', impact: 'Average 24-48 hour turnaround', rootCause: 'Sequential manual review without prioritization', aiSolution: 'Real-time inference with intelligent queue management' },
+            { id: 'ISS-04', title: 'Limited Data Utilization', severity: 'high', impact: 'Only 15% of available signals used', rootCause: 'Manual processes cannot scale to 100+ features', aiSolution: 'Automated feature engineering from all data sources' },
+            { id: 'ISS-05', title: 'No Predictive Capability', severity: 'medium', impact: 'Reactive rather than proactive operations', rootCause: 'Historical analysis only, no forward-looking models', aiSolution: 'Predictive ML models with early warning indicators' },
+            { id: 'ISS-06', title: 'Audit & Compliance Gaps', severity: 'medium', impact: 'Incomplete decision audit trails', rootCause: 'Manual record-keeping across disconnected systems', aiSolution: 'Automated logging with explainable AI decisions' },
+          ],
+          processSteps: [
+            { phase: 'Ingest', label: 'Data Collection', detail: 'Multi-source data ingestion with quality validation', status: 'automated' },
+            { phase: 'Prepare', label: 'Data Preparation', detail: 'Automated cleaning, normalization, and feature engineering', status: 'automated' },
+            { phase: 'Analyze', label: 'ML Analysis', detail: `${ucAiType} model inference with confidence scoring`, status: 'automated' },
+            { phase: 'Decide', label: 'Decision Support', detail: 'AI recommendation with SHAP explanations for human review', status: 'human-in-loop' },
+            { phase: 'Act', label: 'Action Execution', detail: 'Automated downstream actions based on approved decisions', status: 'automated' },
+            { phase: 'Monitor', label: 'Performance Monitoring', detail: 'Continuous model monitoring with drift detection', status: 'automated' },
+            { phase: 'Learn', label: 'Feedback Loop', detail: 'Outcome tracking feeds back into model improvement', status: 'automated' },
+          ],
+          rootCauses: [
+            { category: 'Data', cause: 'Fragmented data sources', why: 'Systems built independently over years', fix: 'Unified data platform with real-time integration' },
+            { category: 'Model', cause: 'No predictive models exist', why: 'Team lacks ML expertise', fix: 'AutoML pipeline with pre-built domain models' },
+            { category: 'Process', cause: 'Fully manual workflows', why: 'No investment in automation', fix: 'AI-augmented decision support workflow' },
+            { category: 'Technology', cause: 'Legacy batch systems', why: 'Tech debt from decades-old platforms', fix: 'Modern streaming architecture with ML serving' },
+            { category: 'People', cause: 'Analyst overload and burnout', why: 'Volume growth without headcount', fix: 'AI handles routine cases, humans focus on complex' },
+          ],
+          kpis: { accuracy: { before: '72%', after: `${ucAccuracy}%` }, falsePositive: { before: '18%', after: '4%' }, latency: { before: '24-48 hrs', after: '< 100ms' }, cost: { before: '$3.2M/yr', after: '$1.8M/yr' }, throughput: { before: '500/day', after: '50,000/day' } },
+        };
+
+        return (
+        <div className="problem-tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {/* Header Banner */}
+          <div className="card" style={{ background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 50%, #991b1b 100%)', color: 'white', border: 'none' }}>
+            <div className="card-body" style={{ padding: '28px 32px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1px', opacity: 0.8, marginBottom: '8px' }}>{ucDomain} | {ucDept}</div>
+                  <h2 style={{ fontSize: '26px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>Problem Analysis: {ucName}</h2>
+                  <p style={{ opacity: 0.9, fontSize: '14px', maxWidth: '700px', lineHeight: 1.6 }}>{problemData.statement}</p>
+                </div>
+                <div style={{ display: 'flex', gap: '16px' }}>
+                  {[
+                    { label: 'Issues Found', value: problemData.issues.length, color: '#fca5a5' },
+                    { label: 'Root Causes', value: problemData.rootCauses.length, color: '#fcd34d' },
+                    { label: 'AI Solutions', value: problemData.issues.length, color: '#6ee7b7' },
+                  ].map((s, i) => (
+                    <div key={i} style={{ textAlign: 'center', padding: '12px 20px', background: 'rgba(255,255,255,0.15)', borderRadius: '12px', minWidth: '90px' }}>
+                      <div style={{ fontSize: '28px', fontWeight: '700', color: s.color }}>{s.value}</div>
+                      <div style={{ fontSize: '11px', opacity: 0.9 }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Issues List */}
+          <div className="card" style={{ border: '2px solid var(--danger-200)' }}>
+            <div className="card-header" style={{ background: 'var(--danger-50)' }}>
+              <h3 className="card-title" style={{ color: 'var(--danger-700)' }}>Issues & Impact Analysis</h3>
+              <span style={{ fontSize: '12px', padding: '4px 12px', background: 'var(--danger-100)', color: 'var(--danger-700)', borderRadius: '12px', fontWeight: '600' }}>{problemData.issues.length} Issues Identified</span>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ background: 'var(--gray-50)' }}>
+                    <th style={{ width: '70px' }}>ID</th>
+                    <th>Issue</th>
+                    <th style={{ width: '80px' }}>Severity</th>
+                    <th>Business Impact</th>
+                    <th>Root Cause</th>
+                    <th>AI Solution</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {problemData.issues.map((issue, i) => (
+                    <tr key={i}>
+                      <td><code style={{ fontSize: '11px', color: 'var(--danger-600)' }}>{issue.id}</code></td>
+                      <td style={{ fontWeight: '600' }}>{issue.title}</td>
+                      <td>
+                        <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '11px', fontWeight: '600',
+                          background: issue.severity === 'critical' ? 'var(--danger-100)' : issue.severity === 'high' ? 'var(--warning-100)' : 'var(--primary-100)',
+                          color: issue.severity === 'critical' ? 'var(--danger-700)' : issue.severity === 'high' ? 'var(--warning-700)' : 'var(--primary-700)'
+                        }}>{issue.severity.toUpperCase()}</span>
+                      </td>
+                      <td style={{ color: 'var(--danger-600)', fontSize: '12px' }}>{issue.impact}</td>
+                      <td style={{ fontSize: '12px', color: 'var(--gray-600)' }}>{issue.rootCause}</td>
+                      <td style={{ fontSize: '12px', color: 'var(--success-700)', fontWeight: '500' }}>{issue.aiSolution}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Process AI Flow */}
+          <div className="card" style={{ border: '2px solid var(--primary-200)' }}>
+            <div className="card-header" style={{ background: 'var(--primary-50)' }}>
+              <h3 className="card-title" style={{ color: 'var(--primary-700)' }}>Process AI - End-to-End Pipeline Flow</h3>
+              <span style={{ fontSize: '12px', padding: '4px 12px', background: 'var(--primary-100)', color: 'var(--primary-700)', borderRadius: '12px', fontWeight: '600' }}>{problemData.processSteps.length} Stages</span>
             </div>
             <div className="card-body">
-              <div style={{ padding: '20px', background: 'var(--warning-50)', borderRadius: '8px', border: '1px solid var(--warning-200)', marginBottom: '20px' }}>
-                <h4 style={{ margin: '0 0 12px 0', color: 'var(--warning-700)' }}>Problem</h4>
-                <p style={{ margin: 0, lineHeight: 1.7, color: 'var(--gray-700)' }}>
-                  {useCase.name.toLowerCase().includes('fraud') ?
-                    'Financial institutions face increasing sophisticated fraud attempts resulting in billions of dollars in losses annually. Traditional rule-based systems fail to detect novel fraud patterns, leading to both high false positive rates (customer friction) and missed fraud cases (financial losses).' :
-                   useCase.name.toLowerCase().includes('credit') ?
-                    'Manual credit assessment processes are slow, inconsistent, and fail to leverage the full spectrum of available data. This results in suboptimal lending decisions, increased default rates, and missed revenue opportunities from creditworthy customers.' :
-                   useCase.name.toLowerCase().includes('risk') ?
-                    'Traditional risk assessment methods are reactive rather than predictive, using limited data sources and static models that fail to adapt to changing market conditions. This leads to inadequate capital allocation and unexpected losses.' :
-                    'Current manual processes are inefficient, error-prone, and unable to scale with business growth. This results in operational bottlenecks, inconsistent outcomes, and inability to meet regulatory requirements.'}
-                </p>
+              {/* Visual Flow */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '24px', background: 'var(--gray-50)', borderRadius: '12px', marginBottom: '24px', overflowX: 'auto' }}>
+                {problemData.processSteps.map((step, i) => (
+                  <React.Fragment key={i}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '110px' }}>
+                      <div style={{
+                        width: '48px', height: '48px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: step.status === 'automated' ? 'var(--success-500)' : 'var(--warning-500)',
+                        color: 'white', fontWeight: '700', fontSize: '14px', marginBottom: '8px'
+                      }}>{i + 1}</div>
+                      <div style={{ fontWeight: '600', fontSize: '12px', textAlign: 'center', marginBottom: '4px' }}>{step.label}</div>
+                      <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '8px', fontWeight: '600',
+                        background: step.status === 'automated' ? 'var(--success-100)' : 'var(--warning-100)',
+                        color: step.status === 'automated' ? 'var(--success-700)' : 'var(--warning-700)'
+                      }}>{step.status === 'automated' ? 'AI Automated' : 'Human-in-Loop'}</span>
+                    </div>
+                    {i < problemData.processSteps.length - 1 && <div style={{ fontSize: '18px', color: 'var(--gray-400)', flexShrink: 0 }}>→</div>}
+                  </React.Fragment>
+                ))}
               </div>
+              {/* Process Details Table */}
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead><tr style={{ background: 'var(--gray-50)' }}><th>Phase</th><th>Stage</th><th>Details</th><th>Status</th></tr></thead>
+                <tbody>
+                  {problemData.processSteps.map((step, i) => (
+                    <tr key={i}>
+                      <td><span style={{ fontWeight: '700', color: 'var(--primary-600)' }}>{step.phase}</span></td>
+                      <td style={{ fontWeight: '600' }}>{step.label}</td>
+                      <td style={{ fontSize: '12px', color: 'var(--gray-600)' }}>{step.detail}</td>
+                      <td><span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '11px', fontWeight: '600',
+                        background: step.status === 'automated' ? 'var(--success-100)' : 'var(--warning-100)',
+                        color: step.status === 'automated' ? 'var(--success-700)' : 'var(--warning-700)'
+                      }}>{step.status === 'automated' ? 'Automated' : 'Human-in-Loop'}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-              <div className="grid grid-cols-3" style={{ gap: '16px' }}>
+          {/* Root Cause Analysis */}
+          <div className="card" style={{ border: '2px solid var(--warning-200)' }}>
+            <div className="card-header" style={{ background: 'var(--warning-50)' }}>
+              <h3 className="card-title" style={{ color: 'var(--warning-700)' }}>Root Cause Analysis (5 Whys)</h3>
+              <span style={{ fontSize: '12px', padding: '4px 12px', background: 'var(--warning-100)', color: 'var(--warning-700)', borderRadius: '12px', fontWeight: '600' }}>{problemData.rootCauses.length} Root Causes</span>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+                {problemData.rootCauses.map((rc, i) => (
+                  <div key={i} style={{ padding: '20px', borderRadius: '12px', border: '1px solid var(--gray-200)', background: 'var(--gray-50)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                      <span style={{ padding: '4px 10px', borderRadius: '8px', fontSize: '11px', fontWeight: '700', background: 'var(--warning-500)', color: 'white' }}>{rc.category}</span>
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--gray-500)', marginBottom: '2px' }}>ISSUE</div>
+                      <div style={{ fontWeight: '600', fontSize: '14px', color: 'var(--danger-600)' }}>{rc.cause}</div>
+                    </div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--gray-500)', marginBottom: '2px' }}>WHY IT OCCURS</div>
+                      <div style={{ fontSize: '13px', color: 'var(--gray-700)' }}>{rc.why}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '11px', color: 'var(--gray-500)', marginBottom: '2px' }}>AI FIX</div>
+                      <div style={{ fontSize: '13px', color: 'var(--success-700)', fontWeight: '500' }}>{rc.fix}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Before vs After KPIs */}
+          <div className="card" style={{ border: '2px solid var(--success-200)' }}>
+            <div className="card-header" style={{ background: 'var(--success-50)' }}>
+              <h3 className="card-title" style={{ color: 'var(--success-700)' }}>Before vs After AI Implementation</h3>
+            </div>
+            <div className="card-body">
+              <div className="grid grid-cols-5" style={{ gap: '16px' }}>
+                {Object.entries(problemData.kpis).map(([key, val], i) => (
+                  <div key={i} style={{ padding: '20px', borderRadius: '12px', border: '1px solid var(--gray-200)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--gray-500)', textTransform: 'capitalize', marginBottom: '12px' }}>{key.replace(/([A-Z])/g, ' $1')}</div>
+                    <div style={{ fontSize: '18px', fontWeight: '700', color: 'var(--danger-500)', textDecoration: 'line-through', marginBottom: '4px' }}>{val.before}</div>
+                    <div style={{ fontSize: '10px', color: 'var(--gray-400)', margin: '4px 0' }}>→</div>
+                    <div style={{ fontSize: '22px', fontWeight: '700', color: 'var(--success-600)' }}>{val.after}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Solution Components */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="card-title">Solution Architecture</h3>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'stretch', gap: '12px', padding: '24px', background: 'var(--gray-50)', borderRadius: '12px' }}>
                 {[
-                  { metric: 'Current Accuracy', value: '72%', trend: 'down', desc: 'Before AI implementation' },
-                  { metric: 'False Positive Rate', value: '15%', trend: 'down', desc: 'Customer friction' },
-                  { metric: 'Processing Time', value: '48 hrs', trend: 'down', desc: 'Manual review time' },
-                ].map((item, i) => (
-                  <div key={i} style={{ padding: '16px', background: 'var(--gray-50)', borderRadius: '8px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '12px', color: 'var(--gray-500)', marginBottom: '4px' }}>{item.metric}</div>
-                    <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--danger-600)' }}>{item.value}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--gray-500)' }}>{item.desc}</div>
+                  { layer: 'Data Sources', items: ['Transaction DB', 'Customer Profiles', 'External APIs', 'Historical Data'], color: 'var(--primary-500)' },
+                  { layer: 'Ingestion', items: ['Kafka Streams', 'Batch ETL', 'Real-time CDC', 'API Gateway'], color: 'var(--warning-500)' },
+                  { layer: 'Processing', items: ['Feature Store', 'Validation', 'Transformation', 'Enrichment'], color: 'var(--success-500)' },
+                  { layer: 'ML Layer', items: ['Training', 'Registry', 'A/B Testing', 'Inference'], color: 'var(--danger-500)' },
+                  { layer: 'Serving', items: ['REST API', 'gRPC', 'Batch Score', 'Real-time'], color: '#8b5cf6' },
+                ].map((layer, i) => (
+                  <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ textAlign: 'center', padding: '10px', background: layer.color, color: 'white', borderRadius: '8px 8px 0 0', fontWeight: '600', fontSize: '12px' }}>{layer.layer}</div>
+                    <div style={{ flex: 1, background: 'white', padding: '10px', borderRadius: '0 0 8px 8px', border: '1px solid var(--gray-200)', borderTop: 'none' }}>
+                      {layer.items.map((item, j) => (
+                        <div key={j} style={{ padding: '6px', marginBottom: j < layer.items.length - 1 ? '6px' : 0, background: 'var(--gray-50)', borderRadius: '4px', fontSize: '11px', textAlign: 'center' }}>{item}</div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -5082,9 +6528,9 @@ const UseCase = () => {
           </div>
 
           {/* Business Use Case */}
-          <div className="card" style={{ marginBottom: '24px' }}>
+          <div className="card">
             <div className="card-header">
-              <h3 className="card-title">Business Use Case</h3>
+              <h3 className="card-title">Objectives & Success Criteria</h3>
             </div>
             <div className="card-body">
               <div className="grid grid-cols-2" style={{ gap: '24px' }}>
@@ -5092,11 +6538,11 @@ const UseCase = () => {
                   <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--primary-600)' }}>Objectives</h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {[
-                      'Improve detection accuracy by 25%+',
-                      'Reduce false positive rate by 50%',
-                      'Enable real-time decision making',
-                      'Ensure regulatory compliance',
-                      'Reduce operational costs by 40%'
+                      `Improve ${ucDomain.toLowerCase()} accuracy to ${ucAccuracy}%+`,
+                      'Reduce false positive rate by 80%',
+                      'Enable real-time decision making (< 100ms)',
+                      'Full regulatory compliance with audit trail',
+                      'Reduce operational costs by 40-60%'
                     ].map((obj, i) => (
                       <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', background: 'var(--gray-50)', borderRadius: '6px' }}>
                         <Icon name="check" size={14} style={{ color: 'var(--success-500)' }} />
@@ -5109,16 +6555,16 @@ const UseCase = () => {
                   <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--success-600)' }}>Success Criteria</h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {[
-                      { criteria: 'Model Accuracy', target: `≥ ${useCase.accuracy}%`, status: 'achieved' },
-                      { criteria: 'Latency', target: '< 100ms', status: 'achieved' },
+                      { criteria: 'Model Accuracy', target: `>= ${ucAccuracy}%`, status: 'achieved' },
+                      { criteria: 'Latency (P95)', target: '< 100ms', status: 'achieved' },
                       { criteria: 'Availability', target: '99.9% SLA', status: 'achieved' },
                       { criteria: 'Explainability', target: 'SHAP/LIME enabled', status: 'achieved' },
                       { criteria: 'Audit Compliance', target: 'Full audit trail', status: 'achieved' }
                     ].map((item, i) => (
-                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--gray-50)', borderRadius: '6px' }}>
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'var(--success-50)', borderRadius: '6px', border: '1px solid var(--success-100)' }}>
                         <span style={{ fontSize: '13px' }}>{item.criteria}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ fontWeight: '600', color: 'var(--primary-600)' }}>{item.target}</span>
+                          <span style={{ fontWeight: '600', color: 'var(--success-600)' }}>{item.target}</span>
                           <Icon name="check" size={14} style={{ color: 'var(--success-500)' }} />
                         </div>
                       </div>
@@ -5128,122 +6574,9 @@ const UseCase = () => {
               </div>
             </div>
           </div>
-
-          {/* High Level Design */}
-          <div className="card" style={{ marginBottom: '24px' }}>
-            <div className="card-header">
-              <h3 className="card-title">High Level Design (HLD)</h3>
-            </div>
-            <div className="card-body">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'stretch', gap: '16px', padding: '24px', background: 'var(--gray-50)', borderRadius: '12px' }}>
-                {[
-                  { layer: 'Data Sources', items: ['Transaction DB', 'Customer Profiles', 'External APIs', 'Historical Data'], color: 'var(--primary-500)' },
-                  { layer: 'Ingestion Layer', items: ['Kafka Streams', 'Batch ETL', 'Real-time CDC', 'API Gateway'], color: 'var(--warning-500)' },
-                  { layer: 'Processing Layer', items: ['Feature Store', 'Data Validation', 'Transformation', 'Enrichment'], color: 'var(--success-500)' },
-                  { layer: 'ML Layer', items: ['Model Training', 'Model Registry', 'A/B Testing', 'Inference Engine'], color: 'var(--danger-500)' },
-                  { layer: 'Serving Layer', items: ['REST API', 'gRPC', 'Batch Scoring', 'Real-time Scoring'], color: 'var(--purple-500)' },
-                ].map((layer, i) => (
-                  <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ textAlign: 'center', padding: '12px', background: layer.color, color: 'white', borderRadius: '8px 8px 0 0', fontWeight: '600', fontSize: '13px' }}>{layer.layer}</div>
-                    <div style={{ flex: 1, background: 'white', padding: '12px', borderRadius: '0 0 8px 8px', border: '1px solid var(--gray-200)', borderTop: 'none' }}>
-                      {layer.items.map((item, j) => (
-                        <div key={j} style={{ padding: '8px', marginBottom: j < layer.items.length - 1 ? '8px' : 0, background: 'var(--gray-50)', borderRadius: '4px', fontSize: '12px', textAlign: 'center' }}>{item}</div>
-                      ))}
-                    </div>
-                    {i < 4 && <div style={{ position: 'absolute', right: '-20px', top: '50%', transform: 'translateY(-50%)', color: 'var(--gray-400)' }}>→</div>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Solution Architecture */}
-          <div className="card" style={{ marginBottom: '24px' }}>
-            <div className="card-header">
-              <h3 className="card-title">Solution Overview</h3>
-            </div>
-            <div className="card-body">
-              <div className="grid grid-cols-2" style={{ gap: '24px' }}>
-                <div>
-                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Solution Components</h4>
-                  {[
-                    { component: 'Data Pipeline', desc: 'Automated ETL with data quality checks', tech: 'Airflow, Spark, Great Expectations' },
-                    { component: 'Feature Engineering', desc: 'Real-time and batch feature computation', tech: 'Feature Store, Feast, Redis' },
-                    { component: 'Model Training', desc: 'Automated retraining with MLOps', tech: 'MLflow, Kubeflow, DVC' },
-                    { component: 'Model Serving', desc: 'Low-latency inference at scale', tech: 'TensorFlow Serving, FastAPI, K8s' },
-                    { component: 'Monitoring', desc: 'Model performance and drift detection', tech: 'Evidently AI, Prometheus, Grafana' },
-                  ].map((item, i) => (
-                    <div key={i} style={{ padding: '12px', background: 'var(--gray-50)', borderRadius: '8px', marginBottom: '12px' }}>
-                      <div style={{ fontWeight: '600', marginBottom: '4px' }}>{item.component}</div>
-                      <div style={{ fontSize: '12px', color: 'var(--gray-600)', marginBottom: '4px' }}>{item.desc}</div>
-                      <div style={{ fontSize: '11px', color: 'var(--primary-600)' }}>{item.tech}</div>
-                    </div>
-                  ))}
-                </div>
-                <div>
-                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>After AI Implementation</h4>
-                  <div className="grid grid-cols-1" style={{ gap: '12px' }}>
-                    {[
-                      { metric: 'Accuracy', before: '72%', after: `${useCase.accuracy}%`, improvement: `+${(useCase.accuracy - 72).toFixed(1)}%` },
-                      { metric: 'False Positive Rate', before: '15%', after: '3%', improvement: '-80%' },
-                      { metric: 'Processing Time', before: '48 hrs', after: '< 100ms', improvement: '-99.9%' },
-                      { metric: 'Operational Cost', before: '$2.5M/yr', after: '$1.5M/yr', improvement: '-40%' },
-                    ].map((item, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', background: 'var(--success-50)', borderRadius: '8px', border: '1px solid var(--success-200)' }}>
-                        <span style={{ fontWeight: '500' }}>{item.metric}</span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                          <span style={{ color: 'var(--danger-600)', textDecoration: 'line-through', fontSize: '13px' }}>{item.before}</span>
-                          <span style={{ color: 'var(--success-600)', fontWeight: '700' }}>{item.after}</span>
-                          <span style={{ padding: '2px 8px', background: 'var(--success-500)', color: 'white', borderRadius: '12px', fontSize: '11px', fontWeight: '600' }}>{item.improvement}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Flowchart */}
-          <div className="card">
-            <div className="card-header">
-              <h3 className="card-title">Process Flowchart</h3>
-            </div>
-            <div className="card-body">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '24px', background: 'var(--gray-50)', borderRadius: '12px', overflowX: 'auto' }}>
-                {[
-                  { step: 'Input', label: 'Receive Request', shape: 'rounded' },
-                  { step: 'Process', label: 'Data Validation', shape: 'rect' },
-                  { step: 'Process', label: 'Feature Extraction', shape: 'rect' },
-                  { step: 'Decision', label: 'Risk Score', shape: 'diamond' },
-                  { step: 'Process', label: 'ML Inference', shape: 'rect' },
-                  { step: 'Decision', label: 'Threshold Check', shape: 'diamond' },
-                  { step: 'Output', label: 'Decision', shape: 'rounded' },
-                ].map((item, i) => (
-                  <React.Fragment key={i}>
-                    <div style={{
-                      padding: '16px 24px',
-                      background: item.step === 'Input' ? 'var(--success-500)' : item.step === 'Output' ? 'var(--primary-500)' : item.shape === 'diamond' ? 'var(--warning-500)' : 'white',
-                      color: item.step === 'Input' || item.step === 'Output' || item.shape === 'diamond' ? 'white' : 'var(--gray-700)',
-                      borderRadius: item.shape === 'rounded' ? '24px' : item.shape === 'diamond' ? '8px' : '8px',
-                      transform: item.shape === 'diamond' ? 'rotate(0deg)' : 'none',
-                      border: item.shape === 'rect' ? '2px solid var(--gray-300)' : 'none',
-                      fontWeight: '500',
-                      fontSize: '13px',
-                      textAlign: 'center',
-                      minWidth: '100px',
-                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                    }}>
-                      {item.label}
-                    </div>
-                    {i < 6 && <div style={{ color: 'var(--gray-400)', fontSize: '20px' }}>→</div>}
-                  </React.Fragment>
-                ))}
-              </div>
-            </div>
-          </div>
         </div>
-      )}
+        );
+      })()}
 
       {activeTab === 'stakeholders' && (
         <div className="stakeholders-tab-content">
@@ -5396,8 +6729,8 @@ const UseCase = () => {
             <div className="card-header">
               <h3 className="card-title">README - {useCase.name}</h3>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary btn-sm"><Icon name="download" size={14} /> Export</button>
-                <button className="btn btn-secondary btn-sm"><Icon name="edit" size={14} /> Edit</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => handleExport('README')} disabled={isButtonLoading('export-readme')}><Icon name="download" size={14} /> Export</button>
+                <button className="btn btn-secondary btn-sm" style={getButtonStyle('action-24')} onClick={() => handleAction('action-24', 'Edit mode coming soon', 'Edit mode coming soon', 1500)} disabled={isButtonLoading('action-24')}><Icon name="edit" size={14} /> Edit</button>
               </div>
             </div>
             <div className="card-body">
@@ -5741,8 +7074,8 @@ const UseCase = () => {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary btn-sm"><Icon name="download" size={14} /> Export PDF</button>
-                <button className="btn btn-primary btn-sm"><Icon name="edit" size={14} /> Edit</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => handleExport('PDF')} disabled={isButtonLoading('export-pdf')}><Icon name="download" size={14} /> Export PDF</button>
+                <button className="btn btn-primary btn-sm" style={getButtonStyle('action-25')} onClick={() => handleAction('action-25', 'Edit mode coming soon', 'Edit mode coming soon', 1500)} disabled={isButtonLoading('action-25')}><Icon name="edit" size={14} /> Edit</button>
               </div>
             </div>
           </div>
@@ -6049,7 +7382,7 @@ const UseCase = () => {
           <div className="card" style={{ marginBottom: '24px' }}>
             <div className="card-header">
               <h3 className="card-title">Data Pipeline Jobs</h3>
-              <button className="btn btn-primary btn-sm"><Icon name="play" size={14} /> Run All</button>
+              <button className="btn btn-primary btn-sm" onClick={() => handleRunPipeline()} disabled={isButtonLoading('run-all-pipeline')} style={getButtonStyle('run-all-pipeline')}><Icon name={isButtonLoading('run-all-pipeline') ? 'clock' : 'play'} size={14} /> {isButtonLoading('run-all-pipeline') ? '⏳ Running...' : 'Run All'}</button>
             </div>
             <div className="card-body" style={{ padding: 0 }}>
               <table className="table">
@@ -6104,7 +7437,7 @@ const UseCase = () => {
           <div className="card" style={{ marginBottom: '24px' }}>
             <div className="card-header">
               <h3 className="card-title">Model Training & Retraining Jobs</h3>
-              <button className="btn btn-secondary btn-sm" onClick={handleRetrain}><Icon name="refresh" size={14} /> Retrain Now</button>
+              <button className="btn btn-secondary btn-sm" style={getButtonStyle('retrain-now')} onClick={handleRetrain} disabled={isButtonLoading('retrain-now')}><Icon name={isButtonLoading('retrain-now') ? 'clock' : 'refresh'} size={14} /> {getButtonText('retrain-now', 'Retrain Now', 'Scheduling...')}</button>
             </div>
             <div className="card-body" style={{ padding: 0 }}>
               <table className="table">
@@ -6255,6 +7588,139 @@ const UseCase = () => {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+
+          {/* RAG Pipeline & Vector DB Jobs */}
+          <div className="card" style={{ marginBottom: '24px', border: '2px solid #8b5cf6' }}>
+            <div className="card-header" style={{ background: 'linear-gradient(135deg, #8b5cf6, #6366f1)' }}>
+              <h3 className="card-title" style={{ color: 'white' }}>🔗 RAG Pipeline & Vector Database Jobs</h3>
+              <button className="btn btn-sm" style={getButtonStyle('sync-vectors', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('sync-vectors', 'Sync', 'Syncing vectors', 4000)} disabled={isButtonLoading('sync-vectors')}>{getButtonText('sync-vectors', '🔄 Sync All', 'Syncing...')}</button>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <table className="table">
+                <thead>
+                  <tr style={{ background: '#f5f3ff' }}>
+                    <th>Job Name</th>
+                    <th>Stage</th>
+                    <th>Schedule</th>
+                    <th>Records/Vectors</th>
+                    <th>Last Run</th>
+                    <th>Duration</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { name: 'Document Ingestion', stage: 'Ingest', schedule: '*/30 * * * *', records: '1,250 docs', lastRun: '15 min ago', duration: '2m 45s', status: 'success' },
+                    { name: 'Chunking Pipeline', stage: 'Chunk', schedule: '0 * * * *', records: '45,230 chunks', lastRun: '45 min ago', duration: '5m 12s', status: 'success' },
+                    { name: 'Tokenization Job', stage: 'Token', schedule: '0 * * * *', records: '2.1M tokens', lastRun: '45 min ago', duration: '3m 28s', status: 'success' },
+                    { name: 'Embedding Generation', stage: 'Embed', schedule: '0 */2 * * *', records: '45,230 vectors', lastRun: '1.5h ago', duration: '12m 30s', status: 'success' },
+                    { name: 'Vector DB Upsert', stage: 'VectorDB', schedule: '0 */2 * * *', records: '45,230 vectors', lastRun: '1.5h ago', duration: '4m 15s', status: 'success' },
+                    { name: 'Cache DB Update', stage: 'Cache', schedule: '*/15 * * * *', records: '12,450 entries', lastRun: '8 min ago', duration: '45s', status: 'success' },
+                    { name: 'Index Optimization', stage: 'Optimize', schedule: '0 3 * * *', records: '45,230 vectors', lastRun: 'Today 3 AM', duration: '8m 20s', status: 'success' },
+                    { name: 'Stale Vector Cleanup', stage: 'Cleanup', schedule: '0 4 * * 0', records: '1,234 removed', lastRun: 'Last Sunday', duration: '3m 10s', status: 'success' },
+                  ].map((job, i) => (
+                    <tr key={i} style={{ background: i % 2 === 0 ? '#ffffff' : '#faf5ff' }}>
+                      <td style={{ fontWeight: '500' }}>{job.name}</td>
+                      <td><span style={{ background: '#ede9fe', color: '#5b21b6', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: '600' }}>{job.stage}</span></td>
+                      <td style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--gray-600)' }}>{job.schedule}</td>
+                      <td style={{ fontWeight: '500', color: '#7c3aed' }}>{job.records}</td>
+                      <td style={{ fontSize: '12px' }}>{job.lastRun}</td>
+                      <td style={{ fontSize: '12px' }}>{job.duration}</td>
+                      <td><span className={`status-badge ${job.status === 'success' ? 'success' : 'danger'}`}>{job.status === 'success' ? 'Success' : 'Failed'}</span></td>
+                      <td>
+                        <button className="btn btn-icon btn-sm btn-secondary" style={getButtonStyle(`run-${job.stage}`)} onClick={() => handleAction(`run-${job.stage}`, 'Run', `Running ${job.name}`, 3000)} disabled={isButtonLoading(`run-${job.stage}`)}>
+                          <Icon name={isButtonLoading(`run-${job.stage}`) ? 'clock' : 'play'} size={12} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* RAG Pipeline Configuration */}
+          <div className="grid grid-cols-3" style={{ gap: '16px', marginBottom: '24px' }}>
+            <div className="card" style={{ border: '1px solid #e9d5ff' }}>
+              <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6', fontSize: '14px' }}>✂️ Chunking Config</h3></div>
+              <div className="card-body">
+                <table style={{ fontSize: '12px', width: '100%' }}><tbody>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Strategy</td><td>Semantic</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Chunk Size</td><td>512 tokens</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Overlap</td><td>50 tokens</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Splitter</td><td>RecursiveText</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+            <div className="card" style={{ border: '1px solid #e9d5ff' }}>
+              <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6', fontSize: '14px' }}>🧮 Embedding Config</h3></div>
+              <div className="card-body">
+                <table style={{ fontSize: '12px', width: '100%' }}><tbody>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Model</td><td>text-embedding-3-large</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Dimensions</td><td>3072</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Batch Size</td><td>100</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Cost/1K</td><td>$0.00013</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+            <div className="card" style={{ border: '1px solid #e9d5ff' }}>
+              <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6', fontSize: '14px' }}>🗃️ Vector DB Config</h3></div>
+              <div className="card-body">
+                <table style={{ fontSize: '12px', width: '100%' }}><tbody>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Database</td><td>Pinecone</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Index</td><td>fraud-docs-prod</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Metric</td><td>Cosine</td></tr>
+                  <tr><td style={{ fontWeight: '500', padding: '4px 0' }}>Replicas</td><td>3</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+          </div>
+
+          {/* Data Table Update Jobs */}
+          <div className="card" style={{ marginBottom: '24px', border: '2px solid #0891b2' }}>
+            <div className="card-header" style={{ background: 'linear-gradient(135deg, #0891b2, #0e7490)' }}>
+              <h3 className="card-title" style={{ color: 'white' }}>📊 Data Table Update Jobs</h3>
+              <button className="btn btn-sm" style={getButtonStyle('refresh-tables', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('refresh-tables', 'Refresh', 'Refreshing tables', 4000)} disabled={isButtonLoading('refresh-tables')}>{getButtonText('refresh-tables', '🔄 Refresh All', 'Refreshing...')}</button>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <table className="table">
+                <thead>
+                  <tr style={{ background: '#ecfeff' }}>
+                    <th>Table/Collection</th>
+                    <th>Type</th>
+                    <th>Schedule</th>
+                    <th>Rows/Docs</th>
+                    <th>Last Update</th>
+                    <th>Delta</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { name: 'transactions_daily', type: 'PostgreSQL', schedule: '*/15 min', rows: '12.5M', lastUpdate: '10 min ago', delta: '+45K', status: 'synced' },
+                    { name: 'customer_profiles', type: 'PostgreSQL', schedule: '2 hours', rows: '2.1M', lastUpdate: '1.5h ago', delta: '+1.2K', status: 'synced' },
+                    { name: 'fraud_labels', type: 'PostgreSQL', schedule: '1 hour', rows: '890K', lastUpdate: '45 min ago', delta: '+234', status: 'synced' },
+                    { name: 'feature_store', type: 'Redis', schedule: 'Real-time', rows: '45M keys', lastUpdate: '30s ago', delta: 'Live', status: 'synced' },
+                    { name: 'embeddings_cache', type: 'Redis', schedule: '15 min', rows: '12K entries', lastUpdate: '8 min ago', delta: '+120', status: 'synced' },
+                    { name: 'model_predictions', type: 'MongoDB', schedule: '5 min', rows: '8.2M docs', lastUpdate: '3 min ago', delta: '+890', status: 'synced' },
+                    { name: 'audit_logs', type: 'Elasticsearch', schedule: 'Real-time', rows: '25M docs', lastUpdate: '10s ago', delta: 'Live', status: 'synced' },
+                    { name: 'metrics_timeseries', type: 'TimescaleDB', schedule: '1 min', rows: '150M points', lastUpdate: '45s ago', delta: '+1.2K', status: 'synced' },
+                  ].map((table, i) => (
+                    <tr key={i} style={{ background: i % 2 === 0 ? '#ffffff' : '#f0fdfa' }}>
+                      <td style={{ fontFamily: 'monospace', fontWeight: '500' }}>{table.name}</td>
+                      <td><span style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: '500' }}>{table.type}</span></td>
+                      <td style={{ fontSize: '12px' }}>{table.schedule}</td>
+                      <td style={{ fontWeight: '500', color: '#0891b2' }}>{table.rows}</td>
+                      <td style={{ fontSize: '12px' }}>{table.lastUpdate}</td>
+                      <td style={{ fontSize: '12px', color: '#10b981', fontWeight: '500' }}>{table.delta}</td>
+                      <td><span className="status-badge success">Synced</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -7518,7 +8984,7 @@ const UseCase = () => {
                   <h3 className="card-title">LinkedIn Post Template</h3>
                   <p className="card-subtitle">Complete documentation for {useCase.name} - Ready to share</p>
                 </div>
-                <button className="btn btn-primary" onClick={() => handleExport('LinkedIn Post')}>
+                <button className="btn btn-primary" onClick={() => handleExport('LinkedIn Post')} disabled={isButtonLoading('export-linkedin-post')}>
                   <Icon name="download" size={16} /> Export as PDF
                 </button>
               </div>
@@ -9063,16 +10529,16 @@ const UseCase = () => {
             </div>
             <div className="card-body">
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={() => handleExport('PDF Document')}>
+                <button className="btn btn-primary" onClick={() => handleExport('PDF Document')} disabled={isButtonLoading('export-pdf-document')}>
                   <Icon name="file" size={16} /> Export as PDF
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('Word Document')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('Word Document')} disabled={isButtonLoading('export-word-document')}>
                   <Icon name="file-text" size={16} /> Export as Word
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('PowerPoint')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('PowerPoint')} disabled={isButtonLoading('export-powerpoint')}>
                   <Icon name="monitor" size={16} /> Export as PPT
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('Markdown')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('Markdown')} disabled={isButtonLoading('export-markdown')}>
                   <Icon name="code" size={16} /> Export as Markdown
                 </button>
                 <button className="btn btn-secondary" onClick={() => {
@@ -10131,16 +11597,16 @@ const UseCase = () => {
             </div>
             <div className="card-body">
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={() => handleExport('AI Strategy PDF')}>
+                <button className="btn btn-primary" onClick={() => handleExport('AI Strategy PDF')} disabled={isButtonLoading('export-ai-strategy-pdf')}>
                   <Icon name="file" size={16} /> Export as PDF
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('AI Strategy PPT')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('AI Strategy PPT')} disabled={isButtonLoading('export-ai-strategy-ppt')}>
                   <Icon name="monitor" size={16} /> Export as PowerPoint
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('AI Strategy Excel')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('AI Strategy Excel')} disabled={isButtonLoading('export-ai-strategy-excel')}>
                   <Icon name="table" size={16} /> Export Metrics to Excel
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('AI Strategy Word')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('AI Strategy Word')} disabled={isButtonLoading('export-ai-strategy-word')}>
                   <Icon name="file-text" size={16} /> Export as Word
                 </button>
               </div>
@@ -11497,19 +12963,19 @@ class EnsemblePredictor:
             </div>
             <div className="card-body">
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={() => handleExport('Interview Guide PDF')}>
+                <button className="btn btn-primary" onClick={() => handleExport('Interview Guide PDF')} disabled={isButtonLoading('export-interview-guide-pdf')}>
                   <Icon name="file" size={16} /> Export Complete Guide
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('Architect Guide')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('Architect Guide')} disabled={isButtonLoading('export-architect-guide')}>
                   <Icon name="layout" size={16} /> Architect Section
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('Developer Guide')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('Developer Guide')} disabled={isButtonLoading('export-developer-guide')}>
                   <Icon name="code" size={16} /> Developer Section
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('DevOps Guide')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('DevOps Guide')} disabled={isButtonLoading('export-devops-guide')}>
                   <Icon name="terminal" size={16} /> DevOps Section
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('Strategy Guide')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('Strategy Guide')} disabled={isButtonLoading('export-strategy-guide')}>
                   <Icon name="trending-up" size={16} /> Strategy Section
                 </button>
               </div>
@@ -11523,27 +12989,136 @@ class EnsemblePredictor:
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
           <div className="card" style={{ background: 'linear-gradient(135deg, var(--danger-600) 0%, var(--danger-800) 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>Cost Analysis Dashboard</h2>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>Business Case & Cost Analysis</h2>
               <p style={{ fontSize: '16px', opacity: 0.9, marginBottom: '24px' }}>
-                Total Cost of Ownership (TCO) analysis for {useCase.name} including infrastructure, compute, and operational costs.
+                ROI analysis, Total Cost of Ownership (TCO), and 5-year financial projections for {useCase.name}.
               </p>
               <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '36px', fontWeight: '700' }}>$47.2K</div>
-                  <div style={{ fontSize: '14px', opacity: 0.8 }}>Monthly TCO</div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '36px', fontWeight: '700' }}>$0.0023</div>
-                  <div style={{ fontSize: '14px', opacity: 0.8 }}>Cost per Prediction</div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '36px', fontWeight: '700' }}>340%</div>
+                <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.15)', padding: '16px 24px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '36px', fontWeight: '700' }}>{businessCase?.roi_percent ?? '340'}%</div>
                   <div style={{ fontSize: '14px', opacity: 0.8 }}>ROI</div>
                 </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '36px', fontWeight: '700' }}>-12%</div>
-                  <div style={{ fontSize: '14px', opacity: 0.8 }}>vs Last Month</div>
+                <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.15)', padding: '16px 24px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '36px', fontWeight: '700' }}>${businessCase?.npv ? (businessCase.npv / 1000000).toFixed(1) + 'M' : '4.2M'}</div>
+                  <div style={{ fontSize: '14px', opacity: 0.8 }}>NPV</div>
                 </div>
+                <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.15)', padding: '16px 24px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '36px', fontWeight: '700' }}>{businessCase?.irr_percent ?? '28'}%</div>
+                  <div style={{ fontSize: '14px', opacity: 0.8 }}>IRR</div>
+                </div>
+                <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.15)', padding: '16px 24px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '36px', fontWeight: '700' }}>{businessCase?.payback_months ?? '14'} mo</div>
+                  <div style={{ fontSize: '14px', opacity: 0.8 }}>Payback Period</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Annual Savings & Implementation Cost */}
+          <div className="grid grid-cols-2" style={{ gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: 'var(--success-50)' }}>
+                <h3 className="card-title" style={{ color: 'var(--success-700)' }}>Annual Savings Breakdown</h3>
+              </div>
+              <div className="card-body">
+                {(businessCase?.annual_savings || [
+                  { category: 'Fraud Loss Reduction', amount: 1800000 },
+                  { category: 'Operational Efficiency', amount: 520000 },
+                  { category: 'False Positive Reduction', amount: 340000 },
+                  { category: 'Regulatory Fine Avoidance', amount: 150000 }
+                ]).map((item, idx) => (
+                  <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid var(--gray-100)' }}>
+                    <span style={{ fontWeight: '500' }}>{item.category}</span>
+                    <span style={{ fontWeight: '700', color: 'var(--success-600)' }}>${(item.amount / 1000000).toFixed(2)}M</span>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', fontWeight: '700', fontSize: '16px' }}>
+                  <span>Total Annual Savings</span>
+                  <span style={{ color: 'var(--success-600)' }}>${((businessCase?.total_annual_savings || 2810000) / 1000000).toFixed(2)}M</span>
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: 'var(--danger-50)' }}>
+                <h3 className="card-title" style={{ color: 'var(--danger-700)' }}>Implementation Cost Breakdown</h3>
+              </div>
+              <div className="card-body">
+                {(businessCase?.implementation_costs || [
+                  { category: 'Infrastructure & Cloud', amount: 285000 },
+                  { category: 'ML Platform & Tools', amount: 180000 },
+                  { category: 'Development Team', amount: 420000 },
+                  { category: 'Training & Change Mgmt', amount: 65000 }
+                ]).map((item, idx) => (
+                  <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid var(--gray-100)' }}>
+                    <span style={{ fontWeight: '500' }}>{item.category}</span>
+                    <span style={{ fontWeight: '700', color: 'var(--danger-600)' }}>${(item.amount / 1000).toFixed(0)}K</span>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', fontWeight: '700', fontSize: '16px' }}>
+                  <span>Total Implementation Cost</span>
+                  <span style={{ color: 'var(--danger-600)' }}>${((businessCase?.total_implementation_cost || 950000) / 1000).toFixed(0)}K</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 5-Year Projection Table */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="card-title">5-Year Financial Projection</h3>
+            </div>
+            <div className="card-body">
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Year</th>
+                      <th>Annual Costs</th>
+                      <th>Annual Savings</th>
+                      <th>Net Benefit</th>
+                      <th>Cumulative</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(businessCase?.five_year_projection || [
+                      { year: 1, costs: 950000, savings: 1400000, net: 450000, cumulative: 450000 },
+                      { year: 2, costs: 566000, savings: 2810000, net: 2244000, cumulative: 2694000 },
+                      { year: 3, costs: 566000, savings: 3091000, net: 2525000, cumulative: 5219000 },
+                      { year: 4, costs: 566000, savings: 3400000, net: 2834000, cumulative: 8053000 },
+                      { year: 5, costs: 566000, savings: 3740000, net: 3174000, cumulative: 11227000 }
+                    ]).map((row, idx) => (
+                      <tr key={idx}>
+                        <td style={{ fontWeight: '600' }}>Year {row.year}</td>
+                        <td style={{ color: 'var(--danger-600)' }}>${(row.costs / 1000).toFixed(0)}K</td>
+                        <td style={{ color: 'var(--success-600)' }}>${(row.savings / 1000000).toFixed(2)}M</td>
+                        <td style={{ color: row.net >= 0 ? 'var(--success-600)' : 'var(--danger-600)', fontWeight: '600' }}>${(row.net / 1000000).toFixed(2)}M</td>
+                        <td style={{ fontWeight: '700', color: row.cumulative >= 0 ? 'var(--success-700)' : 'var(--danger-700)' }}>${(row.cumulative / 1000000).toFixed(2)}M</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* Risk-Adjusted Metrics */}
+          <div className="card">
+            <div className="card-header" style={{ background: 'var(--warning-50)' }}>
+              <h3 className="card-title" style={{ color: 'var(--warning-700)' }}>Risk-Adjusted Metrics</h3>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {(businessCase?.risk_adjusted || [
+                  { label: 'Risk-Adjusted ROI', value: `${businessCase?.risk_adj_roi ?? 285}%`, color: '#10b981' },
+                  { label: 'Confidence Level', value: `${businessCase?.confidence ?? 85}%`, color: '#3b82f6' },
+                  { label: 'Break-Even (Risk Adj.)', value: `${businessCase?.risk_adj_breakeven ?? 18} months`, color: '#f59e0b' },
+                  { label: 'Worst-Case NPV', value: `$${((businessCase?.worst_case_npv || 2100000) / 1000000).toFixed(1)}M`, color: '#ef4444' }
+                ]).map((metric, idx) => (
+                  <div key={idx} style={{ textAlign: 'center', padding: '20px', background: 'var(--gray-50)', borderRadius: '12px', borderTop: `4px solid ${metric.color}` }}>
+                    <div style={{ fontSize: '28px', fontWeight: '700', color: metric.color }}>{metric.value}</div>
+                    <div style={{ fontSize: '13px', color: 'var(--gray-500)', marginTop: '4px' }}>{metric.label}</div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -11919,13 +13494,13 @@ class EnsemblePredictor:
             </div>
             <div className="card-body">
               <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                <button className="btn btn-warning" onClick={() => setNotification({ type: 'info', message: 'Triggering model retraining pipeline...' })}>
+                <button className="btn btn-warning" style={getButtonStyle('action-26')} onClick={() => handleAction('action-26', 'Triggering model retraining...', 'Triggering model retraining pipeline...', 4000)} disabled={isButtonLoading('action-26')}>
                   <Icon name="refresh-cw" size={16} /> Trigger Retraining
                 </button>
-                <button className="btn btn-secondary" onClick={() => handleExport('Drift Report')}>
+                <button className="btn btn-secondary" onClick={() => handleExport('Drift Report')} disabled={isButtonLoading('export-drift-report')}>
                   <Icon name="file" size={16} /> Export Drift Report
                 </button>
-                <button className="btn btn-secondary" onClick={() => setNotification({ type: 'success', message: 'Alert thresholds updated!' })}>
+                <button className="btn btn-secondary" style={getButtonStyle('action-27')} onClick={() => handleAction('action-27', 'Alert thresholds updated', 'Alert thresholds updated!', 2000)} disabled={isButtonLoading('action-27')}>
                   <Icon name="settings" size={16} /> Configure Thresholds
                 </button>
               </div>
@@ -11989,7 +13564,7 @@ class EnsemblePredictor:
                       <td>28 min</td>
                       <td>Redis cache eviction during peak load</td>
                       <td><span className="status-badge success"><span className="status-dot" />Resolved</span></td>
-                      <td><button className="btn btn-sm btn-secondary" onClick={() => setNotification({ type: 'info', message: 'Loading RCA report...' })}>View RCA</button></td>
+                      <td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-28')} onClick={() => handleAction('action-28', 'Loading RCA report', 'Loading RCA report...', 2000)} disabled={isButtonLoading('action-28')}>{getButtonText('action-28', 'View RCA', 'Loading...')}</button></td>
                     </tr>
                     <tr>
                       <td><code>INC-2025-038</code></td>
@@ -11999,7 +13574,7 @@ class EnsemblePredictor:
                       <td>52 min</td>
                       <td>Memory leak in feature preprocessing</td>
                       <td><span className="status-badge success"><span className="status-dot" />Resolved</span></td>
-                      <td><button className="btn btn-sm btn-secondary" onClick={() => setNotification({ type: 'info', message: 'Loading RCA report...' })}>View RCA</button></td>
+                      <td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-29')} onClick={() => handleAction('action-29', 'Loading RCA report', 'Loading RCA report...', 2000)} disabled={isButtonLoading('action-29')}>{getButtonText('action-29', 'View RCA', 'Loading...')}</button></td>
                     </tr>
                     <tr>
                       <td><code>INC-2025-029</code></td>
@@ -12009,7 +13584,7 @@ class EnsemblePredictor:
                       <td>35 min</td>
                       <td>Partition rebalancing during deployment</td>
                       <td><span className="status-badge success"><span className="status-dot" />Resolved</span></td>
-                      <td><button className="btn btn-sm btn-secondary" onClick={() => setNotification({ type: 'info', message: 'Loading RCA report...' })}>View RCA</button></td>
+                      <td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-30')} onClick={() => handleAction('action-30', 'Loading RCA report', 'Loading RCA report...', 2000)} disabled={isButtonLoading('action-30')}>{getButtonText('action-30', 'View RCA', 'Loading...')}</button></td>
                     </tr>
                     <tr>
                       <td><code>INC-2024-412</code></td>
@@ -12019,7 +13594,7 @@ class EnsemblePredictor:
                       <td>1h 15min</td>
                       <td>Database connection pool exhaustion</td>
                       <td><span className="status-badge success"><span className="status-dot" />Resolved</span></td>
-                      <td><button className="btn btn-sm btn-secondary" onClick={() => setNotification({ type: 'info', message: 'Loading RCA report...' })}>View RCA</button></td>
+                      <td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-31')} onClick={() => handleAction('action-31', 'Loading RCA report', 'Loading RCA report...', 2000)} disabled={isButtonLoading('action-31')}>{getButtonText('action-31', 'View RCA', 'Loading...')}</button></td>
                     </tr>
                   </tbody>
                 </table>
@@ -12083,85 +13658,928 @@ class EnsemblePredictor:
         </div>
       )}
 
+      {/* Unified Monitor Tab with Sub-tabs */}
+      {activeTab === 'monitor' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          {/* Header */}
+          <div className="card" style={{ background: 'linear-gradient(135deg, #059669 0%, #0d9488 50%, #0891b2 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '32px' }}>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>Monitoring & Operations Center</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Unified monitoring for drift, SLA, feedback, versioning, operations, and capacity</p>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>99.95%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Uptime</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>0.02%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Drift</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>v2.3.1</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Current</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>68%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Capacity</div></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Sub-tabs Navigation */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', background: '#f3f4f6', padding: '8px', borderRadius: '12px' }}>
+            {[
+              { id: 'drift', label: 'Drift Monitor', icon: '📊' },
+              { id: 'sla', label: 'SLA Dashboard', icon: '📈' },
+              { id: 'feedback', label: 'Feedback Loop', icon: '🔄' },
+              { id: 'version', label: 'Version History', icon: '📜' },
+              { id: 'runbook', label: 'Runbook', icon: '📋' },
+              { id: 'capacity', label: 'Capacity', icon: '⚡' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setMonitorSubTab(tab.id)} style={{ padding: '10px 16px', borderRadius: '8px', border: 'none', background: monitorSubTab === tab.id ? '#059669' : 'white', color: monitorSubTab === tab.id ? 'white' : '#374151', fontWeight: '500', cursor: 'pointer', fontSize: '13px' }}>{tab.icon} {tab.label}</button>
+            ))}
+          </div>
+
+          {/* Drift Monitor Sub-tab */}
+          {monitorSubTab === 'drift' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { label: 'Data Drift', value: '0.02%', status: 'healthy', threshold: '<5%' },
+                  { label: 'Concept Drift', value: '0.8%', status: 'healthy', threshold: '<3%' },
+                  { label: 'Prediction Drift', value: '1.2%', status: 'healthy', threshold: '<5%' },
+                  { label: 'Feature Drift', value: '2.1%', status: 'warning', threshold: '<3%' }
+                ].map((d, idx) => (
+                  <div key={idx} className="card" style={{ borderTop: `4px solid ${d.status === 'healthy' ? '#10b981' : '#f59e0b'}` }}>
+                    <div className="card-body" style={{ textAlign: 'center', padding: '20px' }}>
+                      <div style={{ fontSize: '28px', fontWeight: '700', color: d.status === 'healthy' ? '#10b981' : '#f59e0b' }}>{d.value}</div>
+                      <div style={{ fontSize: '13px', fontWeight: '500' }}>{d.label}</div>
+                      <div style={{ fontSize: '11px', color: '#6b7280' }}>Threshold: {d.threshold}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>📊 Feature Drift Over Time</h3></div>
+                <div className="card-body">
+                  <div style={{ height: '250px' }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={[
+                        { day: 'Mon', txn_amount: 0.5, velocity: 0.8, geo: 1.2 },
+                        { day: 'Tue', txn_amount: 0.6, velocity: 0.9, geo: 1.5 },
+                        { day: 'Wed', txn_amount: 0.4, velocity: 1.1, geo: 1.8 },
+                        { day: 'Thu', txn_amount: 0.7, velocity: 1.4, geo: 2.0 },
+                        { day: 'Fri', txn_amount: 0.5, velocity: 1.2, geo: 2.1 },
+                        { day: 'Sat', txn_amount: 0.8, velocity: 1.0, geo: 1.9 },
+                        { day: 'Sun', txn_amount: 0.6, velocity: 0.9, geo: 1.7 }
+                      ]}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="day" />
+                        <YAxis />
+                        <Tooltip />
+                        <Legend />
+                        <Line type="monotone" dataKey="txn_amount" stroke="#3b82f6" strokeWidth={2} name="Txn Amount" />
+                        <Line type="monotone" dataKey="velocity" stroke="#10b981" strokeWidth={2} name="Velocity" />
+                        <Line type="monotone" dataKey="geo" stroke="#f59e0b" strokeWidth={2} name="Geo Distance" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fee2e2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>🚨 Drift Alerts</h3></div>
+                <div className="card-body">
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Feature</th><th>Drift Type</th><th>Current</th><th>Baseline</th><th>Severity</th><th>Action</th></tr></thead>
+                    <tbody>
+                      <tr><td><code>geo_distance</code></td><td>Distribution</td><td>2.1%</td><td>&lt;1%</td><td><span style={{ background: '#f59e0b', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Warning</span></td><td><button className="btn btn-sm btn-warning" style={getButtonStyle('investigate-geo')} onClick={() => handleAction('investigate-geo', 'Investigate', 'Analyzing drift', 3000)} disabled={isButtonLoading('investigate-geo')}>{getButtonText('investigate-geo', 'Investigate', 'Analyzing...')}</button></td></tr>
+                      <tr><td><code>merchant_category</code></td><td>Category</td><td>Normal</td><td>Normal</td><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Healthy</span></td><td>-</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* SLA Sub-tab */}
+          {monitorSubTab === 'sla' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { metric: 'Availability', current: 99.95, target: 99.9, unit: '%', status: 'met' },
+                  { metric: 'Latency P95', current: 142, target: 200, unit: 'ms', status: 'met' },
+                  { metric: 'Error Rate', current: 0.02, target: 0.1, unit: '%', status: 'met' },
+                  { metric: 'Error Budget', current: 78, target: 100, unit: '%', status: 'met' }
+                ].map((s, idx) => (
+                  <div key={idx} className="card" style={{ borderTop: `4px solid ${s.status === 'met' ? '#10b981' : '#ef4444'}` }}>
+                    <div className="card-body" style={{ textAlign: 'center', padding: '20px' }}>
+                      <div style={{ fontSize: '28px', fontWeight: '700', color: s.status === 'met' ? '#10b981' : '#ef4444' }}>{s.current}{s.unit}</div>
+                      <div style={{ fontSize: '13px', fontWeight: '500' }}>{s.metric}</div>
+                      <div style={{ fontSize: '11px', color: '#6b7280' }}>Target: {s.target}{s.unit}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>📈 SLA Trend (24h)</h3></div>
+                <div className="card-body">
+                  <div style={{ height: '220px' }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={[
+                        { time: '00:00', p50: 22, p95: 138, p99: 240 },
+                        { time: '06:00', p50: 20, p95: 125, p99: 220 },
+                        { time: '12:00', p50: 35, p95: 180, p99: 310 },
+                        { time: '18:00', p50: 28, p95: 155, p99: 270 },
+                        { time: 'Now', p50: 23, p95: 142, p99: 245 }
+                      ]}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="time" />
+                        <YAxis />
+                        <Tooltip />
+                        <Legend />
+                        <Area type="monotone" dataKey="p99" stroke="#ef4444" fill="#fee2e2" name="P99" />
+                        <Area type="monotone" dataKey="p95" stroke="#f59e0b" fill="#fef3c7" name="P95" />
+                        <Area type="monotone" dataKey="p50" stroke="#10b981" fill="#d1fae5" name="P50" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Feedback Loop Sub-tab */}
+          {monitorSubTab === 'feedback' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { label: 'Pending Review', value: '1,247', color: '#f59e0b' },
+                  { label: 'Reviewed Today', value: '432', color: '#10b981' },
+                  { label: 'Override Rate', value: '4.2%', color: '#3b82f6' },
+                  { label: 'Feedback Accuracy', value: '96%', color: '#8b5cf6' }
+                ].map((m, idx) => (
+                  <div key={idx} className="card">
+                    <div className="card-body" style={{ textAlign: 'center', padding: '20px' }}>
+                      <div style={{ fontSize: '28px', fontWeight: '700', color: m.color }}>{m.value}</div>
+                      <div style={{ fontSize: '13px', color: '#6b7280' }}>{m.label}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>📝 Review Queue</h3></div>
+                <div className="card-body">
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Case</th><th>Prediction</th><th>Confidence</th><th>Reason</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr><td><code>TXN-89421</code></td><td style={{ color: '#ef4444' }}>Fraud</td><td>72%</td><td>Low confidence</td><td><button className="btn btn-sm btn-success" style={{ marginRight: '8px', ...getButtonStyle('confirm-89421') }} onClick={() => handleAction('confirm-89421', 'Confirm', 'Recording confirmation', 1500)} disabled={isButtonLoading('confirm-89421')}>{getButtonText('confirm-89421', 'Confirm', 'Saving...')}</button><button className="btn btn-sm btn-danger" style={getButtonStyle('override-89421')} onClick={() => handleAction('override-89421', 'Override', 'Recording override', 1500)} disabled={isButtonLoading('override-89421')}>{getButtonText('override-89421', 'Override', 'Saving...')}</button></td></tr>
+                      <tr><td><code>TXN-89398</code></td><td style={{ color: '#10b981' }}>Legit</td><td>85%</td><td>Edge case</td><td><button className="btn btn-sm btn-success" style={{ marginRight: '8px', ...getButtonStyle('confirm-89398') }} onClick={() => handleAction('confirm-89398', 'Confirm', 'Recording confirmation', 1500)} disabled={isButtonLoading('confirm-89398')}>{getButtonText('confirm-89398', 'Confirm', 'Saving...')}</button><button className="btn btn-sm btn-danger" style={getButtonStyle('override-89398')} onClick={() => handleAction('override-89398', 'Override', 'Recording override', 1500)} disabled={isButtonLoading('override-89398')}>{getButtonText('override-89398', 'Override', 'Saving...')}</button></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Version History Sub-tab */}
+          {monitorSubTab === 'version' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#e0e7ff' }}><h3 className="card-title" style={{ color: '#3730a3' }}>📜 Model Versions</h3></div>
+                <div className="card-body">
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr style={{ background: '#e0e7ff' }}><th>Version</th><th>Date</th><th>Accuracy</th><th>F1</th><th>Latency</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr style={{ background: '#f0fdf4' }}><td><strong>v2.3.1</strong></td><td>Jan 15, 2025</td><td>95.2%</td><td>0.943</td><td>23ms</td><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Production</span></td><td>Current</td></tr>
+                      <tr><td>v2.3.0</td><td>Jan 8, 2025</td><td>94.8%</td><td>0.938</td><td>25ms</td><td><span style={{ background: '#6b7280', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Archived</span></td><td><button className="btn btn-sm btn-warning" style={getButtonStyle('rollback-v230')} onClick={() => handleAction('rollback-v230', 'Rollback', 'Rolling back', 3000)} disabled={isButtonLoading('rollback-v230')}>{getButtonText('rollback-v230', 'Rollback', 'Rolling...')}</button></td></tr>
+                      <tr><td>v2.2.0</td><td>Dec 20, 2024</td><td>94.1%</td><td>0.932</td><td>28ms</td><td><span style={{ background: '#6b7280', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Archived</span></td><td><button className="btn btn-sm btn-warning" style={getButtonStyle('rollback-v220')} onClick={() => handleAction('rollback-v220', 'Rollback', 'Rolling back', 3000)} disabled={isButtonLoading('rollback-v220')}>{getButtonText('rollback-v220', 'Rollback', 'Rolling...')}</button></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🧪 Recent Experiments</h3></div>
+                <div className="card-body">
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Experiment</th><th>Accuracy</th><th>Status</th><th>Action</th></tr></thead>
+                    <tbody>
+                      <tr><td>exp-transformer-v1</td><td>96.1%</td><td><span style={{ color: '#f59e0b' }}>Testing</span></td><td><button className="btn btn-sm btn-primary" style={getButtonStyle('promote-transformer')} onClick={() => handleAction('promote-transformer', 'Promote', 'Promoting', 3000)} disabled={isButtonLoading('promote-transformer')}>{getButtonText('promote-transformer', 'Promote', 'Promoting...')}</button></td></tr>
+                      <tr><td>exp-gnn-fraud</td><td>95.8%</td><td><span style={{ color: '#3b82f6' }}>Validating</span></td><td>-</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Runbook Sub-tab */}
+          {monitorSubTab === 'runbook' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fee2e2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>⚡ Quick Actions</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <button className="btn btn-danger" style={getButtonStyle('mon-restart')} onClick={() => handleAction('mon-restart', 'Restart', 'Restarting service', 5000)} disabled={isButtonLoading('mon-restart')}>{getButtonText('mon-restart', '🔄 Restart Service', 'Restarting...')}</button>
+                    <button className="btn btn-warning" style={getButtonStyle('mon-cache')} onClick={() => handleAction('mon-cache', 'Clear', 'Clearing cache', 3000)} disabled={isButtonLoading('mon-cache')}>{getButtonText('mon-cache', '🗑️ Clear Cache', 'Clearing...')}</button>
+                    <button className="btn btn-primary" style={getButtonStyle('mon-health')} onClick={() => handleAction('mon-health', 'Health Check', 'Running diagnostics', 4000)} disabled={isButtonLoading('mon-health')}>{getButtonText('mon-health', '🏥 Health Check', 'Checking...')}</button>
+                    <button className="btn btn-secondary" style={getButtonStyle('mon-logs')} onClick={() => handleAction('mon-logs', 'Export', 'Collecting logs', 3000)} disabled={isButtonLoading('mon-logs')}>{getButtonText('mon-logs', '📥 Export Logs', 'Exporting...')}</button>
+                  </div>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🔧 Troubleshooting Guide</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gap: '12px' }}>
+                    {[
+                      { severity: 'critical', title: 'Service Down / 5xx Errors', steps: 'Check pods → Review logs → Verify DB → Restart' },
+                      { severity: 'high', title: 'High Latency (>100ms)', steps: 'Check Redis → Feature store → CPU usage → Scale' },
+                      { severity: 'medium', title: 'Model Drift Detected', steps: 'Review metrics → Analyze features → Schedule retrain' }
+                    ].map((issue, idx) => (
+                      <div key={idx} style={{ background: issue.severity === 'critical' ? '#fef2f2' : issue.severity === 'high' ? '#fff7ed' : '#fefce8', padding: '16px', borderRadius: '8px', borderLeft: `4px solid ${issue.severity === 'critical' ? '#dc2626' : issue.severity === 'high' ? '#f97316' : '#eab308'}` }}>
+                        <div style={{ fontWeight: '600', fontSize: '14px', marginBottom: '4px' }}>{issue.title}</div>
+                        <div style={{ fontSize: '12px', color: '#6b7280' }}>{issue.steps}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#ede9fe' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>📞 Escalation Matrix</h3></div>
+                <div className="card-body">
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Level</th><th>Contact</th><th>Response</th><th>Criteria</th></tr></thead>
+                    <tbody>
+                      <tr><td><span style={{ background: '#22c55e', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>L1</span></td><td>On-call Engineer</td><td>15 min</td><td>All alerts</td></tr>
+                      <tr><td><span style={{ background: '#eab308', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>L2</span></td><td>Team Lead</td><td>30 min</td><td>High severity</td></tr>
+                      <tr><td><span style={{ background: '#dc2626', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>L3</span></td><td>Engineering Manager</td><td>1 hour</td><td>Service down</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Capacity Sub-tab */}
+          {monitorSubTab === 'capacity' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { label: 'CPU Usage', value: 68, limit: 80, color: '#8b5cf6' },
+                  { label: 'Memory', value: 72, limit: 85, color: '#3b82f6' },
+                  { label: 'Storage', value: 45, limit: 70, color: '#10b981' },
+                  { label: 'Runway', value: '6 mo', limit: null, color: '#f59e0b' }
+                ].map((c, idx) => (
+                  <div key={idx} className="card">
+                    <div className="card-body" style={{ textAlign: 'center', padding: '20px' }}>
+                      <div style={{ fontSize: '28px', fontWeight: '700', color: c.color }}>{typeof c.value === 'number' ? `${c.value}%` : c.value}</div>
+                      <div style={{ fontSize: '13px', color: '#6b7280' }}>{c.label}</div>
+                      {c.limit && <div style={{ fontSize: '11px', color: '#9ca3af' }}>Limit: {c.limit}%</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>🖥️ Resource Utilization</h3></div>
+                <div className="card-body">
+                  {[
+                    { name: 'CPU (Inference)', current: 68, limit: 80, color: '#8b5cf6' },
+                    { name: 'Memory (Model)', current: 72, limit: 85, color: '#3b82f6' },
+                    { name: 'GPU (Training)', current: 45, limit: 90, color: '#10b981' },
+                    { name: 'Network I/O', current: 35, limit: 60, color: '#f59e0b' }
+                  ].map((item, idx) => (
+                    <div key={idx} style={{ marginBottom: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                        <span style={{ fontWeight: '500', fontSize: '13px' }}>{item.name}</span>
+                        <span style={{ color: item.current > item.limit * 0.9 ? '#ef4444' : '#6b7280', fontSize: '13px' }}>{item.current}% / {item.limit}%</span>
+                      </div>
+                      <div style={{ height: '10px', background: '#e5e7eb', borderRadius: '5px', position: 'relative' }}>
+                        <div style={{ width: `${item.current}%`, height: '100%', background: item.color, borderRadius: '5px' }} />
+                        <div style={{ position: 'absolute', left: `${item.limit}%`, top: '-2px', width: '2px', height: '14px', background: '#ef4444' }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🚀 Scaling Recommendations</h3></div>
+                <div className="card-body">
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Resource</th><th>Current</th><th>Recommended</th><th>Trigger</th><th>Cost</th><th>Action</th></tr></thead>
+                    <tbody>
+                      <tr><td>Inference Pods</td><td>8</td><td>12</td><td>CPU &gt; 75%</td><td>+$2.4K/mo</td><td><button className="btn btn-sm btn-primary" style={getButtonStyle('cap-scale')} onClick={() => handleAction('cap-scale', 'Scale', 'Scaling pods', 3000)} disabled={isButtonLoading('cap-scale')}>{getButtonText('cap-scale', 'Scale', 'Scaling...')}</button></td></tr>
+                      <tr><td>Redis Cache</td><td>16 GB</td><td>32 GB</td><td>Memory &gt; 80%</td><td>+$800/mo</td><td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-32')} onClick={() => handleAction('action-32', 'Resource scaling scheduled', 'Resource scaling scheduled', 2500)} disabled={isButtonLoading('action-32')}>{getButtonText('action-32', 'Schedule', 'Scheduling...')}</button></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* SLA Dashboard Tab */}
       {activeTab === 'sla-dashboard' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--success-500) 0%, var(--success-700) 100%)', color: 'white' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #059669 0%, #047857 50%, #065f46 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>SLA Dashboard</h2>
-              <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>99.95%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Uptime</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>142ms</div><div style={{ fontSize: '14px', opacity: 0.8 }}>P95 Latency</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>0.02%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Error Rate</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>78%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Error Budget</div></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '20px' }}>
+                <div>
+                  <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>SLA Performance Dashboard</h2>
+                  <p style={{ opacity: 0.8, marginBottom: '16px' }}>Real-time service level monitoring and compliance tracking</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', border: 'none', ...getButtonStyle('export-sla') }} onClick={() => handleAction('export-sla', 'Export', 'Generating SLA report', 2500)} disabled={isButtonLoading('export-sla')}>{getButtonText('export-sla', '📊 Export Report', 'Exporting...')}</button>
+                  <button className="btn" style={{ background: 'white', color: '#059669', border: 'none', ...getButtonStyle('alert-config') }} onClick={() => handleAction('alert-config', 'Configure', 'Opening alert settings', 1500)} disabled={isButtonLoading('alert-config')}>{getButtonText('alert-config', '🔔 Alerts', 'Opening...')}</button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginTop: '20px' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>99.95%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Uptime (30d)</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>23ms</div><div style={{ fontSize: '14px', opacity: 0.8 }}>P50 Latency</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>142ms</div><div style={{ fontSize: '14px', opacity: 0.8 }}>P95 Latency</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>0.02%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Error Rate</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>78%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Error Budget</div></div>
               </div>
             </div>
           </div>
-          <div className="grid grid-cols-3" style={{ gap: '16px' }}>
-            <div className="card" style={{ background: 'var(--success-50)', border: '2px solid var(--success-300)' }}><div className="card-body" style={{ textAlign: 'center', padding: '24px' }}><div style={{ fontSize: '14px', color: 'var(--gray-600)', marginBottom: '8px' }}>Availability</div><div style={{ fontSize: '32px', fontWeight: '700', color: 'var(--success-600)' }}>99.95%</div><div style={{ fontSize: '13px', color: 'var(--success-600)', marginTop: '8px' }}>Target: 99.9% | Met</div></div></div>
-            <div className="card" style={{ background: 'var(--success-50)', border: '2px solid var(--success-300)' }}><div className="card-body" style={{ textAlign: 'center', padding: '24px' }}><div style={{ fontSize: '14px', color: 'var(--gray-600)', marginBottom: '8px' }}>Latency (P95)</div><div style={{ fontSize: '32px', fontWeight: '700', color: 'var(--success-600)' }}>142ms</div><div style={{ fontSize: '13px', color: 'var(--success-600)', marginTop: '8px' }}>Target: 200ms | Met</div></div></div>
-            <div className="card" style={{ background: 'var(--success-50)', border: '2px solid var(--success-300)' }}><div className="card-body" style={{ textAlign: 'center', padding: '24px' }}><div style={{ fontSize: '14px', color: 'var(--gray-600)', marginBottom: '8px' }}>Error Rate</div><div style={{ fontSize: '32px', fontWeight: '700', color: 'var(--success-600)' }}>0.02%</div><div style={{ fontSize: '13px', color: 'var(--success-600)', marginTop: '8px' }}>Target: 0.1% | Met</div></div></div>
+
+          {/* SLA Targets */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+            {[
+              { metric: 'Availability', current: 99.95, target: 99.9, status: 'met', icon: '🟢' },
+              { metric: 'Latency P95', current: 142, target: 200, unit: 'ms', status: 'met', icon: '🟢' },
+              { metric: 'Latency P99', current: 245, target: 500, unit: 'ms', status: 'met', icon: '🟢' },
+              { metric: 'Error Rate', current: 0.02, target: 0.1, unit: '%', status: 'met', icon: '🟢' }
+            ].map((sla, idx) => (
+              <div key={idx} className="card" style={{ borderTop: sla.status === 'met' ? '4px solid #10b981' : '4px solid #ef4444' }}>
+                <div className="card-body" style={{ textAlign: 'center', padding: '24px' }}>
+                  <div style={{ fontSize: '24px', marginBottom: '8px' }}>{sla.icon}</div>
+                  <div style={{ fontSize: '14px', color: '#6b7280', marginBottom: '8px' }}>{sla.metric}</div>
+                  <div style={{ fontSize: '28px', fontWeight: '700', color: sla.status === 'met' ? '#059669' : '#dc2626' }}>{sla.current}{sla.unit || '%'}</div>
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '8px' }}>Target: {sla.target}{sla.unit || '%'}</div>
+                  <div style={{ fontSize: '11px', color: sla.status === 'met' ? '#10b981' : '#ef4444', marginTop: '4px', fontWeight: '600' }}>{sla.status === 'met' ? '✓ COMPLIANT' : '✗ BREACHED'}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Charts Row */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>📈 Latency Trend (24h)</h3></div>
+              <div className="card-body">
+                <div style={{ height: '250px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={[
+                      { time: '00:00', p50: 22, p95: 138, p99: 240 },
+                      { time: '04:00', p50: 20, p95: 125, p99: 220 },
+                      { time: '08:00', p50: 28, p95: 165, p99: 280 },
+                      { time: '12:00', p50: 35, p95: 180, p99: 310 },
+                      { time: '16:00', p50: 32, p95: 170, p99: 290 },
+                      { time: '20:00', p50: 25, p95: 145, p99: 250 },
+                      { time: 'Now', p50: 23, p95: 142, p99: 245 }
+                    ]}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="time" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Area type="monotone" dataKey="p99" stackId="1" stroke="#ef4444" fill="#fee2e2" name="P99" />
+                      <Area type="monotone" dataKey="p95" stackId="2" stroke="#f59e0b" fill="#fef3c7" name="P95" />
+                      <Area type="monotone" dataKey="p50" stackId="3" stroke="#10b981" fill="#d1fae5" name="P50" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>⏱️ Error Budget</h3></div>
+              <div className="card-body">
+                <div style={{ textAlign: 'center', padding: '20px' }}>
+                  <div style={{ position: 'relative', width: '150px', height: '150px', margin: '0 auto' }}>
+                    <svg viewBox="0 0 100 100" style={{ transform: 'rotate(-90deg)' }}>
+                      <circle cx="50" cy="50" r="40" fill="none" stroke="#e5e7eb" strokeWidth="12" />
+                      <circle cx="50" cy="50" r="40" fill="none" stroke="#10b981" strokeWidth="12" strokeDasharray={`${78 * 2.51} 251`} />
+                    </svg>
+                    <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '32px', fontWeight: '700', color: '#059669' }}>78%</div>
+                      <div style={{ fontSize: '11px', color: '#6b7280' }}>remaining</div>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: '16px', fontSize: '13px', color: '#6b7280' }}>
+                    <div>Monthly Budget: 43.2 min</div>
+                    <div>Used: 9.5 min (22%)</div>
+                    <div>Remaining: 33.7 min</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Incident History */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef2f2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>🚨 Recent Incidents</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#fef2f2' }}><th>Incident</th><th>Date</th><th>Duration</th><th>Impact</th><th>Root Cause</th><th>Status</th></tr></thead>
+                <tbody>
+                  <tr><td><code>INC-2025-003</code></td><td>Jan 12, 2025</td><td>8 min</td><td>P95 spike to 450ms</td><td>Feature store latency</td><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Resolved</span></td></tr>
+                  <tr><td><code>INC-2025-002</code></td><td>Jan 5, 2025</td><td>3 min</td><td>Error rate 0.5%</td><td>Database connection pool</td><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Resolved</span></td></tr>
+                  <tr><td><code>INC-2024-089</code></td><td>Dec 28, 2024</td><td>15 min</td><td>Partial outage</td><td>Kubernetes pod eviction</td><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>Resolved</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* SLA by Endpoint */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>🔌 SLA by Endpoint</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#dbeafe' }}><th>Endpoint</th><th>Requests (24h)</th><th>Availability</th><th>P50</th><th>P95</th><th>P99</th><th>Errors</th><th>Status</th></tr></thead>
+                <tbody>
+                  <tr><td><code>/api/v1/predict</code></td><td>2.4M</td><td>99.98%</td><td>23ms</td><td>142ms</td><td>245ms</td><td>0.02%</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                  <tr><td><code>/api/v1/batch</code></td><td>45K</td><td>99.95%</td><td>1.2s</td><td>2.8s</td><td>4.5s</td><td>0.05%</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                  <tr><td><code>/api/v1/explain</code></td><td>180K</td><td>99.92%</td><td>145ms</td><td>320ms</td><td>580ms</td><td>0.08%</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                  <tr><td><code>/api/v1/health</code></td><td>8.6M</td><td>100%</td><td>5ms</td><td>12ms</td><td>25ms</td><td>0%</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
 
-      {/* A/B Testing Tab */}
+      {/* A/B Testing Tab - Enhanced */}
       {activeTab === 'ab-testing' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--teal-500) 0%, var(--teal-700) 100%)', color: 'white' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #0d9488 0%, #0f766e 50%, #115e59 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>A/B Testing</h2>
-              <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>2</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Active Experiments</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>+2.3%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Avg Lift</div></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '20px' }}>
+                <div>
+                  <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>A/B Testing & Experimentation</h2>
+                  <p style={{ opacity: 0.8, marginBottom: '16px' }}>Model experimentation platform with statistical significance tracking</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', border: 'none', ...getButtonStyle('new-experiment') }} onClick={() => handleAction('new-experiment', 'Create', 'Initializing experiment wizard', 2000)} disabled={isButtonLoading('new-experiment')}>{getButtonText('new-experiment', '➕ New Experiment', 'Creating...')}</button>
+                  <button className="btn" style={{ background: 'white', color: '#0d9488', border: 'none', ...getButtonStyle('exp-report') }} onClick={() => handleAction('exp-report', 'Generate', 'Compiling experiment report', 2500)} disabled={isButtonLoading('exp-report')}>{getButtonText('exp-report', '📊 Report', 'Generating...')}</button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginTop: '20px' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>3</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Active</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>12</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Completed</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>+2.3%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Avg Lift</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '16px 24px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>67%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Win Rate</div></div>
               </div>
             </div>
           </div>
+
+          {/* Active Experiments */}
           <div className="card">
-            <div className="card-header"><h3 className="card-title">Active Experiments</h3></div>
+            <div className="card-header" style={{ background: '#ccfbf1' }}><h3 className="card-title" style={{ color: '#115e59' }}>🧪 Active Experiments</h3></div>
             <div className="card-body">
-              <div className="table-container">
-                <table className="data-table">
-                  <thead><tr><th>Experiment</th><th>Hypothesis</th><th>Split</th><th>Lift</th><th>P-Value</th><th>Status</th></tr></thead>
-                  <tbody>
-                    <tr><td><strong>EXP-018</strong></td><td>New ensemble weights</td><td>90/10</td><td style={{ color: 'var(--success-600)' }}>+1.8%</td><td>0.023</td><td><span className="status-badge success"><span className="status-dot" />Significant</span></td></tr>
-                    <tr><td><strong>EXP-019</strong></td><td>Transformer features</td><td>95/5</td><td style={{ color: 'var(--warning-600)' }}>+0.6%</td><td>0.142</td><td><span className="status-badge warning"><span className="status-dot" />Running</span></td></tr>
-                  </tbody>
-                </table>
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#ccfbf1' }}><th>Experiment</th><th>Hypothesis</th><th>Variant</th><th>Traffic</th><th>Samples</th><th>Metric</th><th>Lift</th><th>P-Value</th><th>Power</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr style={{ background: '#ecfdf5' }}>
+                    <td><strong>EXP-021</strong></td>
+                    <td>GNN-based features</td>
+                    <td>Control vs Variant A</td>
+                    <td>90/10</td>
+                    <td>245K / 27K</td>
+                    <td>Precision</td>
+                    <td style={{ color: '#059669', fontWeight: '600' }}>+2.8%</td>
+                    <td style={{ color: '#059669' }}>0.008</td>
+                    <td>0.92</td>
+                    <td><span style={{ background: '#10b981', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '10px' }}>Significant</span></td>
+                    <td><button className="btn btn-sm btn-success" style={getButtonStyle('promote-021')} onClick={() => handleAction('promote-021', 'Promote', 'Promoting experiment to production', 3000)} disabled={isButtonLoading('promote-021')}>{getButtonText('promote-021', 'Promote', 'Promoting...')}</button></td>
+                  </tr>
+                  <tr>
+                    <td><strong>EXP-020</strong></td>
+                    <td>Transformer encoder</td>
+                    <td>Control vs Variant B</td>
+                    <td>95/5</td>
+                    <td>380K / 20K</td>
+                    <td>F1 Score</td>
+                    <td style={{ color: '#f59e0b', fontWeight: '600' }}>+1.2%</td>
+                    <td>0.087</td>
+                    <td>0.68</td>
+                    <td><span style={{ background: '#f59e0b', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '10px' }}>Running</span></td>
+                    <td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-33')} onClick={() => handleAction('action-33', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-33')} disabled>{getButtonText('action-33', 'Need more data', 'Loading...')}</button></td>
+                  </tr>
+                  <tr>
+                    <td><strong>EXP-019</strong></td>
+                    <td>New threshold tuning</td>
+                    <td>Control vs Variant C</td>
+                    <td>80/20</td>
+                    <td>160K / 40K</td>
+                    <td>Recall</td>
+                    <td style={{ color: '#6b7280', fontWeight: '600' }}>+0.3%</td>
+                    <td>0.342</td>
+                    <td>0.45</td>
+                    <td><span style={{ background: '#6b7280', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '10px' }}>Inconclusive</span></td>
+                    <td><button className="btn btn-sm btn-danger" style={getButtonStyle('stop-019')} onClick={() => handleAction('stop-019', 'Stop', 'Stopping experiment', 2000)} disabled={isButtonLoading('stop-019')}>{getButtonText('stop-019', 'Stop', 'Stopping...')}</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Experiment Results Visualization */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>📈 EXP-021: Metric Over Time</h3></div>
+              <div className="card-body">
+                <div style={{ height: '220px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={[
+                      { day: 'Day 1', control: 93.2, variant: 93.5 },
+                      { day: 'Day 3', control: 93.4, variant: 94.8 },
+                      { day: 'Day 5', control: 93.3, variant: 95.2 },
+                      { day: 'Day 7', control: 93.5, variant: 95.8 },
+                      { day: 'Day 10', control: 93.4, variant: 96.0 },
+                      { day: 'Day 14', control: 93.5, variant: 96.2 }
+                    ]}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="day" />
+                      <YAxis domain={[92, 97]} />
+                      <Tooltip />
+                      <Legend />
+                      <Line type="monotone" dataKey="control" stroke="#6b7280" strokeWidth={2} name="Control" dot={{ fill: '#6b7280' }} />
+                      <Line type="monotone" dataKey="variant" stroke="#10b981" strokeWidth={2} name="Variant A" dot={{ fill: '#10b981' }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>📊 Statistical Analysis</h3></div>
+              <div className="card-body">
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  {[
+                    { label: 'Sample Size', control: '245,312', variant: '27,256' },
+                    { label: 'Conversion', control: '93.5%', variant: '96.3%' },
+                    { label: 'Lift', value: '+2.8%', single: true },
+                    { label: 'P-Value', value: '0.008 (< 0.05)', single: true },
+                    { label: 'Confidence', value: '99.2%', single: true },
+                    { label: 'Statistical Power', value: '0.92', single: true }
+                  ].map((item, idx) => (
+                    <div key={idx} style={{ background: '#f9fafb', padding: '12px', borderRadius: '8px', gridColumn: item.single ? 'span 2' : 'span 1' }}>
+                      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '4px' }}>{item.label}</div>
+                      {item.single ? (
+                        <div style={{ fontSize: '16px', fontWeight: '600', color: '#059669' }}>{item.value}</div>
+                      ) : (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ fontSize: '14px' }}>C: {item.control}</span>
+                          <span style={{ fontSize: '14px', color: '#059669' }}>V: {item.variant}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Completed Experiments */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#e0e7ff' }}><h3 className="card-title" style={{ color: '#3730a3' }}>📋 Completed Experiments (Last 30 Days)</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#e0e7ff' }}><th>Experiment</th><th>Hypothesis</th><th>Duration</th><th>Lift</th><th>P-Value</th><th>Outcome</th><th>Impact</th></tr></thead>
+                <tbody>
+                  <tr><td><strong>EXP-018</strong></td><td>Ensemble weight optimization</td><td>21 days</td><td style={{ color: '#059669' }}>+1.8%</td><td>0.023</td><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>WINNER</span></td><td>$320K/year</td></tr>
+                  <tr><td><strong>EXP-017</strong></td><td>Real-time feature refresh</td><td>14 days</td><td style={{ color: '#059669' }}>+0.9%</td><td>0.041</td><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>WINNER</span></td><td>$180K/year</td></tr>
+                  <tr><td><strong>EXP-016</strong></td><td>LSTM sequence length</td><td>28 days</td><td style={{ color: '#ef4444' }}>-0.2%</td><td>0.412</td><td><span style={{ background: '#6b7280', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>NO DIFF</span></td><td>N/A</td></tr>
+                  <tr><td><strong>EXP-015</strong></td><td>Categorical embedding dim</td><td>18 days</td><td style={{ color: '#ef4444' }}>-1.1%</td><td>0.018</td><td><span style={{ background: '#ef4444', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>LOSER</span></td><td>Avoided</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Experiment Config */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#fce7f3' }}><h3 className="card-title" style={{ color: '#9d174d' }}>⚙️ Experiment Configuration</h3></div>
+              <div className="card-body" style={{ fontSize: '13px' }}>
+                <div style={{ display: 'grid', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>Min Sample Size</span><span style={{ fontWeight: '600' }}>10,000 per variant</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>Significance Level (α)</span><span style={{ fontWeight: '600' }}>0.05</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>Statistical Power (1-β)</span><span style={{ fontWeight: '600' }}>0.80</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>MDE (Min Detectable Effect)</span><span style={{ fontWeight: '600' }}>0.5%</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>Correction Method</span><span style={{ fontWeight: '600' }}>Bonferroni</span></div>
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#f0fdf4' }}><h3 className="card-title" style={{ color: '#166534' }}>🎯 Best Practices</h3></div>
+              <div className="card-body">
+                <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '12px', lineHeight: '1.8' }}>
+                  <li>Always run experiments with guardrail metrics</li>
+                  <li>Don't peek at results before sample size reached</li>
+                  <li>Document hypothesis before starting</li>
+                  <li>Use sequential testing for early stopping</li>
+                  <li>Consider network effects and spillover</li>
+                  <li>Archive all experiment configs for reproducibility</li>
+                </ul>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Bias & Fairness Tab */}
-      {activeTab === 'bias-fairness' && (
+      {/* Unified Responsible AI Tab with Sub-tabs */}
+      {activeTab === 'responsible-ai' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--pink-500) 0%, var(--pink-700) 100%)', color: 'white' }}>
+          {/* Header */}
+          <div className="card" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 50%, #4f46e5 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>Bias & Fairness</h2>
-              <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>0.98</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Demographic Parity</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>0.96</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Equalized Odds</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>1.02</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Disparate Impact</div></div>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>Responsible AI Framework</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Comprehensive AI governance covering explainability, ethics, trust, security, robustness, and portability</p>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>98%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Compliance Score</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>0.98</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Fairness Index</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>100%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Explainability</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>A+</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Security Rating</div></div>
               </div>
             </div>
           </div>
-          <div className="card">
-            <div className="card-header"><h3 className="card-title">Fairness by Segment</h3></div>
-            <div className="card-body">
-              <div className="table-container">
-                <table className="data-table">
-                  <thead><tr><th>Segment</th><th>Population</th><th>Approval</th><th>Precision</th><th>Status</th></tr></thead>
-                  <tbody>
-                    <tr><td>Age 18-30</td><td>28%</td><td>72.3%</td><td>93.5%</td><td><span className="status-badge success"><span className="status-dot" />Fair</span></td></tr>
-                    <tr><td>Age 31-50</td><td>42%</td><td>74.1%</td><td>94.2%</td><td><span className="status-badge success"><span className="status-dot" />Fair</span></td></tr>
-                    <tr><td>Age 51+</td><td>30%</td><td>73.8%</td><td>93.8%</td><td><span className="status-badge success"><span className="status-dot" />Fair</span></td></tr>
-                  </tbody>
-                </table>
+
+          {/* Sub-tabs Navigation */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', background: '#f3f4f6', padding: '8px', borderRadius: '12px' }}>
+            {[
+              { id: 'explainable', label: 'Explainable AI', icon: '🔍' },
+              { id: 'trustworthy', label: 'Trustworthy AI', icon: '🤝' },
+              { id: 'ethical', label: 'Ethical AI', icon: '⚖️' },
+              { id: 'robust', label: 'Robust AI', icon: '🛡️' },
+              { id: 'secure', label: 'Secure AI', icon: '🔒' },
+              { id: 'portable', label: 'Portable AI', icon: '📦' },
+              { id: 'compliant', label: 'Compliant AI', icon: '✅' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setAiSubTab(tab.id)} style={{ padding: '10px 16px', borderRadius: '8px', border: 'none', background: aiSubTab === tab.id ? '#8b5cf6' : 'white', color: aiSubTab === tab.id ? 'white' : '#374151', fontWeight: '500', cursor: 'pointer', fontSize: '13px' }}>{tab.icon} {tab.label}</button>
+            ))}
+          </div>
+
+          {/* Explainable AI Sub-tab */}
+          {aiSubTab === 'explainable' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#ede9fe' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>🔍 Model Explainability Dashboard</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                    {[
+                      { label: 'SHAP Coverage', value: '100%', desc: 'All predictions explained' },
+                      { label: 'LIME Available', value: 'Yes', desc: 'Local interpretations' },
+                      { label: 'Feature Attribution', value: '45', desc: 'Features tracked' },
+                      { label: 'Audit Trail', value: '100%', desc: 'Full traceability' }
+                    ].map((item, idx) => (
+                      <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '24px', fontWeight: '700', color: '#8b5cf6' }}>{item.value}</div>
+                        <div style={{ fontSize: '13px', fontWeight: '500' }}>{item.label}</div>
+                        <div style={{ fontSize: '11px', color: '#6b7280' }}>{item.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Top Feature Importances (Global SHAP)</h4>
+                  <div style={{ display: 'grid', gap: '8px' }}>
+                    {[
+                      { feature: 'transaction_amount', importance: 0.32, color: '#ef4444' },
+                      { feature: 'velocity_1hour', importance: 0.24, color: '#f59e0b' },
+                      { feature: 'geo_distance', importance: 0.18, color: '#10b981' },
+                      { feature: 'merchant_risk_score', importance: 0.12, color: '#3b82f6' },
+                      { feature: 'device_fingerprint', importance: 0.08, color: '#8b5cf6' }
+                    ].map((f, idx) => (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <code style={{ width: '180px', fontSize: '12px' }}>{f.feature}</code>
+                        <div style={{ flex: 1, height: '20px', background: '#e5e7eb', borderRadius: '4px', position: 'relative' }}>
+                          <div style={{ width: `${f.importance * 100}%`, height: '100%', background: f.color, borderRadius: '4px' }} />
+                        </div>
+                        <span style={{ width: '50px', fontSize: '13px', fontWeight: '600' }}>{(f.importance * 100).toFixed(0)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>📊 Explanation Methods</h3></div>
+                <div className="card-body">
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Method</th><th>Type</th><th>Use Case</th><th>Latency</th><th>Status</th></tr></thead>
+                    <tbody>
+                      <tr><td><strong>SHAP</strong></td><td>Model-agnostic</td><td>Feature attribution</td><td>50ms</td><td><span style={{ color: '#10b981' }}>✓ Active</span></td></tr>
+                      <tr><td><strong>LIME</strong></td><td>Local</td><td>Instance explanation</td><td>200ms</td><td><span style={{ color: '#10b981' }}>✓ Active</span></td></tr>
+                      <tr><td><strong>Attention Weights</strong></td><td>Model-specific</td><td>Sequence importance</td><td>5ms</td><td><span style={{ color: '#10b981' }}>✓ Active</span></td></tr>
+                      <tr><td><strong>Counterfactual</strong></td><td>Contrastive</td><td>What-if analysis</td><td>500ms</td><td><span style={{ color: '#f59e0b' }}>Beta</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {/* Trustworthy AI Sub-tab */}
+          {aiSubTab === 'trustworthy' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#dcfce7' }}><h3 className="card-title" style={{ color: '#166534' }}>🤝 Trust Metrics</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px' }}>
+                    {[
+                      { name: 'Reliability', score: 98, desc: 'Consistent predictions across similar inputs', color: '#10b981' },
+                      { name: 'Reproducibility', score: 100, desc: 'Same results on same inputs', color: '#3b82f6' },
+                      { name: 'Transparency', score: 95, desc: 'Clear documentation and audit trails', color: '#8b5cf6' }
+                    ].map((item, idx) => (
+                      <div key={idx} style={{ background: '#f9fafb', padding: '20px', borderRadius: '12px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '36px', fontWeight: '700', color: item.color }}>{item.score}%</div>
+                        <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px' }}>{item.name}</div>
+                        <div style={{ fontSize: '11px', color: '#6b7280' }}>{item.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>📋 Trust Certification Checklist</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    {[
+                      { item: 'Model documentation complete', status: true },
+                      { item: 'Training data provenance tracked', status: true },
+                      { item: 'Bias testing performed', status: true },
+                      { item: 'Human oversight mechanisms', status: true },
+                      { item: 'Appeal/override process defined', status: true },
+                      { item: 'Regular audit schedule established', status: true },
+                      { item: 'Stakeholder communication plan', status: true },
+                      { item: 'Incident response procedure', status: true }
+                    ].map((c, idx) => (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', background: c.status ? '#f0fdf4' : '#fef2f2', borderRadius: '8px' }}>
+                        <span style={{ color: c.status ? '#10b981' : '#ef4444' }}>{c.status ? '✓' : '✗'}</span>
+                        <span style={{ fontSize: '13px' }}>{c.item}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Ethical AI Sub-tab */}
+          {aiSubTab === 'ethical' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fce7f3' }}><h3 className="card-title" style={{ color: '#9d174d' }}>⚖️ Bias & Fairness Metrics</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                    {[
+                      { metric: 'Demographic Parity', value: 0.98, target: 0.95, status: 'pass' },
+                      { metric: 'Equalized Odds', value: 0.96, target: 0.90, status: 'pass' },
+                      { metric: 'Disparate Impact', value: 1.02, target: '>0.8', status: 'pass' },
+                      { metric: 'Calibration', value: 0.97, target: 0.95, status: 'pass' }
+                    ].map((m, idx) => (
+                      <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '12px', textAlign: 'center', borderTop: `4px solid ${m.status === 'pass' ? '#10b981' : '#ef4444'}` }}>
+                        <div style={{ fontSize: '24px', fontWeight: '700', color: m.status === 'pass' ? '#10b981' : '#ef4444' }}>{m.value}</div>
+                        <div style={{ fontSize: '12px', fontWeight: '500' }}>{m.metric}</div>
+                        <div style={{ fontSize: '11px', color: '#6b7280' }}>Target: {m.target}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Fairness by Protected Attribute</h4>
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Segment</th><th>Population</th><th>Approval Rate</th><th>Precision</th><th>FPR</th><th>Status</th></tr></thead>
+                    <tbody>
+                      <tr><td>Age 18-30</td><td>28%</td><td>72.3%</td><td>93.5%</td><td>2.1%</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+                      <tr><td>Age 31-50</td><td>42%</td><td>74.1%</td><td>94.2%</td><td>1.9%</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+                      <tr><td>Age 51+</td><td>30%</td><td>73.8%</td><td>93.8%</td><td>2.0%</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Robust AI Sub-tab */}
+          {aiSubTab === 'robust' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#fee2e2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>🛡️ Robustness Testing Results</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                    {[
+                      { test: 'Adversarial Attack', score: '98%', desc: 'Resistant to perturbations' },
+                      { test: 'Out-of-Distribution', score: '94%', desc: 'Handles edge cases' },
+                      { test: 'Data Corruption', score: '96%', desc: 'Noisy input tolerance' },
+                      { test: 'Feature Drift', score: '92%', desc: 'Distribution shift resilience' }
+                    ].map((t, idx) => (
+                      <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '24px', fontWeight: '700', color: '#dc2626' }}>{t.score}</div>
+                        <div style={{ fontSize: '12px', fontWeight: '500' }}>{t.test}</div>
+                        <div style={{ fontSize: '11px', color: '#6b7280' }}>{t.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>Robustness Test Suite</h4>
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Test Type</th><th>Last Run</th><th>Samples</th><th>Pass Rate</th><th>Status</th></tr></thead>
+                    <tbody>
+                      <tr><td>FGSM Attack</td><td>Jan 15, 2025</td><td>10,000</td><td>98.2%</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                      <tr><td>PGD Attack</td><td>Jan 15, 2025</td><td>10,000</td><td>97.8%</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                      <tr><td>Random Noise</td><td>Jan 15, 2025</td><td>50,000</td><td>99.1%</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                      <tr><td>Missing Features</td><td>Jan 15, 2025</td><td>20,000</td><td>95.4%</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Secure AI Sub-tab */}
+          {aiSubTab === 'secure' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#1f2937', color: 'white' }}><h3 className="card-title" style={{ color: 'white' }}>🔒 Security Posture</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                    {[
+                      { area: 'Data Encryption', status: 'AES-256', icon: '🔐' },
+                      { area: 'Access Control', status: 'RBAC + MFA', icon: '👤' },
+                      { area: 'Model Protection', status: 'Signed & Encrypted', icon: '🛡️' },
+                      { area: 'Audit Logging', status: '100% Coverage', icon: '📝' }
+                    ].map((s, idx) => (
+                      <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '28px', marginBottom: '8px' }}>{s.icon}</div>
+                        <div style={{ fontSize: '12px', fontWeight: '500' }}>{s.area}</div>
+                        <div style={{ fontSize: '13px', fontWeight: '600', color: '#059669' }}>{s.status}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr style={{ background: '#1f2937', color: 'white' }}><th>Security Control</th><th>Implementation</th><th>Compliance</th><th>Last Audit</th></tr></thead>
+                    <tbody>
+                      <tr><td>Model Input Validation</td><td>Schema + Range checks</td><td>SOC2 Type II</td><td>Jan 10, 2025</td></tr>
+                      <tr><td>Inference API Auth</td><td>OAuth 2.0 + API Keys</td><td>ISO 27001</td><td>Jan 10, 2025</td></tr>
+                      <tr><td>Training Data Security</td><td>Encrypted at rest/transit</td><td>PCI-DSS</td><td>Jan 10, 2025</td></tr>
+                      <tr><td>Model Versioning</td><td>Signed artifacts + checksums</td><td>Internal</td><td>Jan 10, 2025</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Portable AI Sub-tab */}
+          {aiSubTab === 'portable' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>📦 Model Portability</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                    {[
+                      { format: 'ONNX', status: 'Available', icon: '✓' },
+                      { format: 'TensorFlow SavedModel', status: 'Available', icon: '✓' },
+                      { format: 'PyTorch TorchScript', status: 'Available', icon: '✓' },
+                      { format: 'PMML', status: 'On Request', icon: '⏳' }
+                    ].map((f, idx) => (
+                      <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '12px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '24px', color: f.status === 'Available' ? '#10b981' : '#f59e0b' }}>{f.icon}</div>
+                        <div style={{ fontSize: '13px', fontWeight: '500' }}>{f.format}</div>
+                        <div style={{ fontSize: '11px', color: '#6b7280' }}>{f.status}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr><th>Deployment Target</th><th>Format</th><th>Runtime</th><th>Latency</th><th>Status</th></tr></thead>
+                    <tbody>
+                      <tr><td>AWS SageMaker</td><td>TensorFlow</td><td>Python 3.9</td><td>23ms</td><td><span style={{ color: '#10b981' }}>✓ Active</span></td></tr>
+                      <tr><td>Azure ML</td><td>ONNX</td><td>ONNX Runtime</td><td>25ms</td><td><span style={{ color: '#10b981' }}>✓ Active</span></td></tr>
+                      <tr><td>Kubernetes</td><td>Docker</td><td>Python 3.9</td><td>22ms</td><td><span style={{ color: '#10b981' }}>✓ Active</span></td></tr>
+                      <tr><td>Edge Devices</td><td>TFLite</td><td>TFLite Runtime</td><td>45ms</td><td><span style={{ color: '#f59e0b' }}>Testing</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Compliant AI Sub-tab */}
+          {aiSubTab === 'compliant' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div className="card">
+                <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>✅ Regulatory Compliance</h3></div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                    {[
+                      { reg: 'GDPR', status: 'Compliant', icon: '🇪🇺' },
+                      { reg: 'CCPA', status: 'Compliant', icon: '🇺🇸' },
+                      { reg: 'EU AI Act', status: 'Compliant', icon: '🤖' },
+                      { reg: 'SR 11-7', status: 'Compliant', icon: '🏦' }
+                    ].map((r, idx) => (
+                      <div key={idx} style={{ background: '#f0fdf4', padding: '16px', borderRadius: '12px', textAlign: 'center', border: '2px solid #10b981' }}>
+                        <div style={{ fontSize: '24px', marginBottom: '8px' }}>{r.icon}</div>
+                        <div style={{ fontSize: '13px', fontWeight: '600' }}>{r.reg}</div>
+                        <div style={{ fontSize: '12px', color: '#059669' }}>{r.status}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <table className="table" style={{ fontSize: '12px' }}>
+                    <thead><tr style={{ background: '#ecfdf5' }}><th>Requirement</th><th>Regulation</th><th>Implementation</th><th>Last Audit</th><th>Status</th></tr></thead>
+                    <tbody>
+                      <tr><td>Right to Explanation</td><td>GDPR Art. 22</td><td>SHAP + Documentation</td><td>Jan 2025</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                      <tr><td>Model Risk Management</td><td>SR 11-7</td><td>MRM Framework</td><td>Jan 2025</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                      <tr><td>High-Risk AI System</td><td>EU AI Act</td><td>Risk Assessment</td><td>Jan 2025</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                      <tr><td>Data Subject Rights</td><td>CCPA</td><td>Delete/Export API</td><td>Jan 2025</td><td><span style={{ color: '#10b981' }}>✓</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -12185,8 +14603,8 @@ class EnsemblePredictor:
                 <table className="data-table">
                   <thead><tr><th>Case</th><th>Prediction</th><th>Confidence</th><th>Actions</th></tr></thead>
                   <tbody>
-                    <tr><td><code>TXN-89421</code></td><td style={{ color: 'var(--danger-600)' }}>Fraud</td><td>72%</td><td><button className="btn btn-sm btn-success" style={{ marginRight: '8px' }} onClick={() => setNotification({ type: 'success', message: 'Confirmed!' })}>Confirm</button><button className="btn btn-sm btn-danger" onClick={() => setNotification({ type: 'info', message: 'Override recorded' })}>Override</button></td></tr>
-                    <tr><td><code>TXN-89398</code></td><td style={{ color: 'var(--success-600)' }}>Legit</td><td>85%</td><td><button className="btn btn-sm btn-success" style={{ marginRight: '8px' }} onClick={() => setNotification({ type: 'success', message: 'Confirmed!' })}>Confirm</button><button className="btn btn-sm btn-danger" onClick={() => setNotification({ type: 'info', message: 'Override recorded' })}>Override</button></td></tr>
+                    <tr><td><code>TXN-89421</code></td><td style={{  color: 'var(--danger-600)' , opacity: isButtonLoading('action-34') ? 0.7 : 1, cursor: isButtonLoading('action-34') ? 'not-allowed' : 'pointer' }}>Fraud</td><td>72%</td><td><button className="btn btn-sm btn-success" style={{ marginRight: '8px' }} onClick={() => handleAction('action-34', 'Confirmed', 'Confirmed!', 1500)} disabled={isButtonLoading('action-34')}>{getButtonText('action-34', 'Confirm', 'Confirming...')}</button><button className="btn btn-sm btn-danger" style={getButtonStyle('override-89421b')} onClick={() => handleAction('override-89421b', 'Override', 'Recording override', 1500)} disabled={isButtonLoading('override-89421b')}>{getButtonText('override-89421b', 'Override', 'Recording...')}</button></td></tr>
+                    <tr><td><code>TXN-89398</code></td><td style={{  color: 'var(--success-600)' , opacity: isButtonLoading('action-35') ? 0.7 : 1, cursor: isButtonLoading('action-35') ? 'not-allowed' : 'pointer' }}>Legit</td><td>85%</td><td><button className="btn btn-sm btn-success" style={{ marginRight: '8px' }} onClick={() => handleAction('action-35', 'Confirmed', 'Confirmed!', 1500)} disabled={isButtonLoading('action-35')}>{getButtonText('action-35', 'Confirm', 'Confirming...')}</button><button className="btn btn-sm btn-danger" style={getButtonStyle('override-89398b')} onClick={() => handleAction('override-89398b', 'Override', 'Recording override', 1500)} disabled={isButtonLoading('override-89398b')}>{getButtonText('override-89398b', 'Override', 'Recording...')}</button></td></tr>
                   </tbody>
                 </table>
               </div>
@@ -12198,26 +14616,61 @@ class EnsemblePredictor:
       {/* Version History Tab */}
       {activeTab === 'version-history' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--indigo-500) 0%, var(--indigo-700) 100%)', color: 'white' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 50%, #4338ca 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>Version History</h2>
-              <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>v2.3.1</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Current</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>24</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Versions</div></div>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>📜 Model Version History & Registry</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Complete audit trail of model versions, experiments, and deployments</p>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>v2.3.1</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Current</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>24</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Total Versions</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>156</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Experiments</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>18</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Deployments</div></div>
               </div>
             </div>
           </div>
           <div className="card">
-            <div className="card-header"><h3 className="card-title">Model Versions</h3></div>
+            <div className="card-header" style={{ background: '#eef2ff' }}><h3 className="card-title" style={{ color: '#4338ca' }}>🏷️ Model Versions</h3></div>
             <div className="card-body">
-              <div className="table-container">
-                <table className="data-table">
-                  <thead><tr><th>Version</th><th>Date</th><th>Accuracy</th><th>Status</th><th>Actions</th></tr></thead>
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead><tr style={{ background: '#eef2ff' }}><th style={{ color: '#4338ca' }}>Version</th><th style={{ color: '#4338ca' }}>Release Date</th><th style={{ color: '#4338ca' }}>Accuracy</th><th style={{ color: '#4338ca' }}>F1 Score</th><th style={{ color: '#4338ca' }}>Latency</th><th style={{ color: '#4338ca' }}>Status</th><th style={{ color: '#4338ca' }}>Changes</th><th style={{ color: '#4338ca' }}>Actions</th></tr></thead>
+                <tbody>
+                  <tr style={{  background: '#ecfdf5' , opacity: isButtonLoading('action-36') ? 0.7 : 1, cursor: isButtonLoading('action-36') ? 'not-allowed' : 'pointer' }}><td><strong style={{ color: '#059669' }}>v2.3.1</strong></td><td>Jan 15, 2025</td><td>95.2%</td><td>0.943</td><td>23ms</td><td><span style={{ background: '#10b981', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '11px' }}>Production</span></td><td>Feature drift fix</td><td><button className="btn btn-sm btn-secondary" onClick={() => handleAction('action-36', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-36')} disabled>{getButtonText('action-36', 'Current', 'Loading...')}</button></td></tr>
+                  <tr><td>v2.3.0</td><td>Jan 8, 2025</td><td>94.8%</td><td>0.938</td><td>25ms</td><td><span style={{ background: '#6b7280', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '11px' }}>Archived</span></td><td>New ensemble weights</td><td><button className="btn btn-sm btn-warning" style={getButtonStyle('rollback-2.3.0')} onClick={() => handleAction('rollback-2.3.0', 'Rollback', 'Rolling back to v2.3.0', 3000)} disabled={isButtonLoading('rollback-2.3.0')}>{getButtonText('rollback-2.3.0', 'Rollback', 'Rolling...')}</button></td></tr>
+                  <tr><td>v2.2.0</td><td>Dec 20, 2024</td><td>94.1%</td><td>0.932</td><td>28ms</td><td><span style={{ background: '#6b7280', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '11px' }}>Archived</span></td><td>Added LSTM layer</td><td><button className="btn btn-sm btn-warning" style={getButtonStyle('rollback-2.2.0')} onClick={() => handleAction('rollback-2.2.0', 'Rollback', 'Rolling back to v2.2.0', 3000)} disabled={isButtonLoading('rollback-2.2.0')}>{getButtonText('rollback-2.2.0', 'Rollback', 'Rolling...')}</button></td></tr>
+                  <tr><td>v2.1.0</td><td>Dec 5, 2024</td><td>93.5%</td><td>0.925</td><td>32ms</td><td><span style={{ background: '#6b7280', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '11px' }}>Archived</span></td><td>XGBoost tuning</td><td><button className="btn btn-sm btn-warning" style={getButtonStyle('rollback-2.1.0')} onClick={() => handleAction('rollback-2.1.0', 'Rollback', 'Rolling back to v2.1.0', 3000)} disabled={isButtonLoading('rollback-2.1.0')}>{getButtonText('rollback-2.1.0', 'Rollback', 'Rolling...')}</button></td></tr>
+                  <tr><td>v2.0.0</td><td>Nov 15, 2024</td><td>92.8%</td><td>0.918</td><td>35ms</td><td><span style={{ background: '#ef4444', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '11px' }}>Deprecated</span></td><td>Major architecture</td><td><span style={{ color: '#6b7280', fontSize: '12px' }}>Not available</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🧪 Recent Experiments</h3></div>
+              <div className="card-body">
+                <table className="table" style={{ fontSize: '12px' }}>
+                  <thead><tr><th>Experiment</th><th>Accuracy</th><th>Status</th></tr></thead>
                   <tbody>
-                    <tr><td><strong>v2.3.1</strong></td><td>Jan 15</td><td>{useCase.accuracy > 0 ? useCase.accuracy.toFixed(1) : 95.2}%</td><td><span className="status-badge success"><span className="status-dot" />Production</span></td><td><button className="btn btn-sm btn-secondary" disabled>Current</button></td></tr>
-                    <tr><td>v2.3.0</td><td>Jan 8</td><td>94.8%</td><td><span className="status-badge info"><span className="status-dot" />Archived</span></td><td><button className="btn btn-sm btn-warning" onClick={() => setNotification({ type: 'warning', message: 'Rolling back...' })}>Rollback</button></td></tr>
+                    <tr><td>exp-transformer-v1</td><td>96.1%</td><td><span style={{ color: '#f59e0b' }}>Testing</span></td></tr>
+                    <tr><td>exp-gnn-fraud</td><td>95.8%</td><td><span style={{ color: '#3b82f6' }}>Validating</span></td></tr>
+                    <tr><td>exp-ensemble-v4</td><td>95.3%</td><td><span style={{ color: '#10b981' }}>Promoted</span></td></tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#fce7f3' }}><h3 className="card-title" style={{ color: '#be185d' }}>📊 Version Comparison</h3></div>
+              <div className="card-body">
+                <div style={{ height: '200px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={[{ v: 'v2.0', acc: 92.8 }, { v: 'v2.1', acc: 93.5 }, { v: 'v2.2', acc: 94.1 }, { v: 'v2.3', acc: 95.2 }]}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="v" />
+                      <YAxis domain={[90, 100]} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="acc" stroke="#6366f1" strokeWidth={3} dot={{ fill: '#6366f1', r: 6 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
           </div>
@@ -12227,25 +14680,57 @@ class EnsemblePredictor:
       {/* Data Lineage Tab */}
       {activeTab === 'data-lineage' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--orange-500) 0%, var(--orange-700) 100%)', color: 'white' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #f97316 0%, #ea580c 50%, #c2410c 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>Data Lineage</h2>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>🔗 End-to-End Data Lineage</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Track data from source to prediction with full provenance and audit trail</p>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>12</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Data Sources</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>45</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Features</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>8</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Transform Steps</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>100%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Traced</div></div>
+              </div>
             </div>
           </div>
           <div className="card">
-            <div className="card-header"><h3 className="card-title">Data Flow</h3></div>
+            <div className="card-header" style={{ background: '#fff7ed' }}><h3 className="card-title" style={{ color: '#c2410c' }}>📊 Data Flow Pipeline</h3></div>
             <div className="card-body">
-              <div style={{ background: 'var(--gray-50)', borderRadius: '12px', padding: '24px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                <div style={{ background: 'var(--primary-500)', color: 'white', padding: '12px 20px', borderRadius: '8px', textAlign: 'center' }}>Source DB</div>
-                <div style={{ color: 'var(--gray-400)' }}>→</div>
-                <div style={{ background: 'var(--success-500)', color: 'white', padding: '12px 20px', borderRadius: '8px', textAlign: 'center' }}>Kafka</div>
-                <div style={{ color: 'var(--gray-400)' }}>→</div>
-                <div style={{ background: 'var(--warning-500)', color: 'white', padding: '12px 20px', borderRadius: '8px', textAlign: 'center' }}>Spark</div>
-                <div style={{ color: 'var(--gray-400)' }}>→</div>
-                <div style={{ background: 'var(--danger-500)', color: 'white', padding: '12px 20px', borderRadius: '8px', textAlign: 'center' }}>Feature Store</div>
-                <div style={{ color: 'var(--gray-400)' }}>→</div>
-                <div style={{ background: 'var(--purple-500)', color: 'white', padding: '12px 20px', borderRadius: '8px', textAlign: 'center' }}>ML Model</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                {[
+                  { stage: 'Source', items: [{ name: 'Transaction DB', type: 'PostgreSQL', records: '10M/day' }, { name: 'Customer DB', type: 'Oracle', records: '5M' }, { name: 'External API', type: 'REST', records: '1M/day' }], color: '#3b82f6' },
+                  { stage: 'Ingestion', items: [{ name: 'Kafka Streams', type: 'Real-time', records: '50K TPS' }, { name: 'Airflow DAG', type: 'Batch', records: 'Daily' }], color: '#10b981' },
+                  { stage: 'Processing', items: [{ name: 'Spark Jobs', type: 'Transform', records: '45 features' }, { name: 'Flink Stream', type: 'Aggregate', records: 'Windows' }], color: '#f59e0b' },
+                  { stage: 'Feature Store', items: [{ name: 'Feast', type: 'Online', records: '<10ms' }, { name: 'Delta Lake', type: 'Offline', records: '30 days' }], color: '#ef4444' },
+                  { stage: 'Model', items: [{ name: 'Fraud Ensemble', type: 'Production', records: 'v2.3.1' }], color: '#8b5cf6' }
+                ].map((stage, idx) => (
+                  <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                    <div style={{ width: '120px', padding: '12px', background: stage.color, color: 'white', borderRadius: '8px', textAlign: 'center', fontWeight: '700' }}>{stage.stage}</div>
+                    <div style={{ fontSize: '24px', color: '#d1d5db' }}>→</div>
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', flex: 1 }}>
+                      {stage.items.map((item, i) => (
+                        <div key={i} style={{ background: '#f9fafb', border: '1px solid #e5e7eb', padding: '10px 16px', borderRadius: '8px', minWidth: '150px' }}>
+                          <div style={{ fontWeight: '600', fontSize: '13px' }}>{item.name}</div>
+                          <div style={{ fontSize: '11px', color: '#6b7280' }}>{item.type} | {item.records}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef2f2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>🔍 Feature Lineage Detail</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#fef2f2' }}><th>Feature</th><th>Source Table</th><th>Transformation</th><th>Dependencies</th><th>Last Updated</th><th>Quality</th></tr></thead>
+                <tbody>
+                  <tr><td><code>txn_amount_zscore</code></td><td>transactions</td><td>StandardScaler</td><td>txn_amount</td><td>5 min ago</td><td><span style={{ color: '#10b981' }}>✓ Valid</span></td></tr>
+                  <tr><td><code>velocity_1h</code></td><td>transactions</td><td>Window Agg (1h)</td><td>txn_count, customer_id</td><td>5 min ago</td><td><span style={{ color: '#10b981' }}>✓ Valid</span></td></tr>
+                  <tr><td><code>geo_distance</code></td><td>transactions + geo</td><td>Haversine</td><td>lat, lng, prev_lat, prev_lng</td><td>5 min ago</td><td><span style={{ color: '#10b981' }}>✓ Valid</span></td></tr>
+                  <tr><td><code>merchant_risk</code></td><td>merchants</td><td>Join + Lookup</td><td>merchant_id, risk_scores</td><td>1 hour ago</td><td><span style={{ color: '#f59e0b' }}>⚠ Stale</span></td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -12254,14 +14739,72 @@ class EnsemblePredictor:
       {/* Capacity Planning Tab */}
       {activeTab === 'capacity-planning' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--purple-600) 0%, var(--purple-800) 100%)', color: 'white' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 50%, #5b21b6 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>Capacity Planning</h2>
-              <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>68%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>CPU</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>72%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Memory</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '36px', fontWeight: '700' }}>6mo</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Runway</div></div>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>📈 Infrastructure Capacity Planning</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Resource utilization, scaling forecasts, and capacity runway analysis</p>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>68%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>CPU Usage</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>72%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Memory</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>45%</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Storage</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>6 mo</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Runway</div></div>
               </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>🖥️ Current Resource Utilization</h3></div>
+              <div className="card-body">
+                {[
+                  { name: 'CPU (Inference)', current: 68, limit: 80, color: '#8b5cf6' },
+                  { name: 'Memory (Model)', current: 72, limit: 85, color: '#3b82f6' },
+                  { name: 'GPU (Training)', current: 45, limit: 90, color: '#10b981' },
+                  { name: 'Storage (Features)', current: 45, limit: 70, color: '#f59e0b' },
+                  { name: 'Network I/O', current: 35, limit: 60, color: '#ef4444' }
+                ].map((item, idx) => (
+                  <div key={idx} style={{ marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontWeight: '500', fontSize: '13px' }}>{item.name}</span>
+                      <span style={{ color: item.current > item.limit * 0.9 ? '#ef4444' : '#6b7280', fontSize: '13px' }}>{item.current}% / {item.limit}%</span>
+                    </div>
+                    <div style={{ height: '10px', background: '#e5e7eb', borderRadius: '5px', position: 'relative' }}>
+                      <div style={{ width: `${item.current}%`, height: '100%', background: item.color, borderRadius: '5px' }} />
+                      <div style={{ position: 'absolute', left: `${item.limit}%`, top: '-2px', width: '2px', height: '14px', background: '#ef4444' }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>📊 Traffic Forecast (Next 6 Months)</h3></div>
+              <div className="card-body">
+                <div style={{ height: '200px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={[{ m: 'Jan', current: 10, forecast: 10 }, { m: 'Feb', current: 12, forecast: 13 }, { m: 'Mar', current: 14, forecast: 16 }, { m: 'Apr', forecast: 20 }, { m: 'May', forecast: 25 }, { m: 'Jun', forecast: 32 }]}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="m" />
+                      <YAxis />
+                      <Tooltip />
+                      <Area type="monotone" dataKey="current" stroke="#10b981" fill="#d1fae5" name="Current" />
+                      <Area type="monotone" dataKey="forecast" stroke="#8b5cf6" fill="#ede9fe" name="Forecast" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>TPS (Thousands)</div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🚀 Scaling Recommendations</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead><tr style={{ background: '#fef3c7' }}><th>Resource</th><th>Current</th><th>Recommended</th><th>Trigger</th><th>Timeline</th><th>Cost Impact</th><th>Action</th></tr></thead>
+                <tbody>
+                  <tr><td>Inference Pods</td><td>8 pods</td><td>12 pods</td><td>{'CPU > 75%'}</td><td>Feb 2025</td><td>+$2,400/mo</td><td><button className="btn btn-sm btn-primary" style={getButtonStyle('scale-pods')} onClick={() => handleAction('scale-pods', 'Scale', 'Scaling pods', 3000)} disabled={isButtonLoading('scale-pods')}>{getButtonText('scale-pods', 'Scale Now', 'Scaling...')}</button></td></tr>
+                  <tr><td>Redis Cache</td><td>16 GB</td><td>32 GB</td><td>{'Memory > 80%'}</td><td>Mar 2025</td><td>+$800/mo</td><td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-37')} onClick={() => handleAction('action-37', 'Resource scaling scheduled', 'Resource scaling scheduled', 2500)} disabled={isButtonLoading('action-37')}>{getButtonText('action-37', 'Schedule', 'Scheduling...')}</button></td></tr>
+                  <tr><td>Feature Store</td><td>500 GB</td><td>1 TB</td><td>{'Storage > 60%'}</td><td>Apr 2025</td><td>+$1,200/mo</td><td><button className="btn btn-sm btn-secondary" style={getButtonStyle('action-38')} onClick={() => handleAction('action-38', 'Resource scaling scheduled', 'Resource scaling scheduled', 2500)} disabled={isButtonLoading('action-38')}>{getButtonText('action-38', 'Schedule', 'Scheduling...')}</button></td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -12270,42 +14813,283 @@ class EnsemblePredictor:
       {/* Executive Summary Tab */}
       {activeTab === 'executive-summary' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--primary-600) 0%, var(--primary-900) 100%)', color: 'white' }}>
-            <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>{useCase.name}</h2>
-              <p style={{ fontSize: '16px', opacity: 0.9, marginBottom: '24px' }}>Executive Summary</p>
-              <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '42px', fontWeight: '700' }}>{useCase.accuracy > 0 ? useCase.accuracy.toFixed(1) : 95}%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Accuracy</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '42px', fontWeight: '700' }}>$2.8M</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Savings</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '42px', fontWeight: '700' }}>340%</div><div style={{ fontSize: '14px', opacity: 0.8 }}>ROI</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: '42px', fontWeight: '700', color: '#4ade80' }}>HEALTHY</div><div style={{ fontSize: '14px', opacity: 0.8 }}>Status</div></div>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #1e3a8a 50%, #172554 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '40px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '24px' }}>
+                <div>
+                  <div style={{ fontSize: '14px', opacity: 0.8, marginBottom: '8px' }}>AI/ML USE CASE</div>
+                  <h1 style={{ fontSize: '32px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>{useCase.name}</h1>
+                  <p style={{ fontSize: '16px', opacity: 0.9, maxWidth: '600px' }}>Executive summary for stakeholders with key performance metrics, business impact, and strategic recommendations.</p>
+                </div>
+                <div style={{ display: 'flex', gap: '16px' }}>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', ...getButtonStyle('export-exec') }} onClick={async () => {
+                    const btnId = 'export-exec';
+                    setButtonLoading(btnId, true);
+                    setNotification({ type: 'info', message: 'Generating executive summary PDF...' });
+                    try {
+                      const ucIdVal = pipelineUc?.ucId || useCase?.id || '';
+                      const ucPath = pipelineUc?.path || '';
+                      const res = await fetch(`/api/admin/export/executive-summary/${encodeURIComponent(ucIdVal)}?uc_path=${encodeURIComponent(ucPath)}`, { method: 'POST' });
+                      if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+                      const blob = await res.blob();
+                      const downloadUrl = window.URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = downloadUrl;
+                      a.download = `${ucIdVal}_executive_summary.pdf`;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      window.URL.revokeObjectURL(downloadUrl);
+                      setNotification({ type: 'success', message: 'Executive summary downloaded!' });
+                    } catch (err) {
+                      console.error('Export error:', err);
+                      setNotification({ type: 'error', message: `Export failed: ${err.message}` });
+                    } finally {
+                      setButtonLoading(btnId, false);
+                      setTimeout(() => setNotification(null), 3000);
+                    }
+                  }} disabled={isButtonLoading('export-exec')}>{getButtonText('export-exec', '📄 Export PDF', 'Exporting...')}</button>
+                  <button className="btn" style={{ background: 'white', color: '#1e40af', border: 'none', ...getButtonStyle('share-exec') }} onClick={() => handleAction('share-exec', 'Share', 'Preparing stakeholder email', 2000)} disabled={isButtonLoading('share-exec')}>{getButtonText('share-exec', '📧 Share', 'Sharing...')}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+            {[
+              { label: 'Model Accuracy', value: `${useCase.accuracy > 0 ? useCase.accuracy.toFixed(1) : 95.2}%`, change: '+2.3%', color: '#10b981', icon: '🎯' },
+              { label: 'Annual Savings', value: '$2.8M', change: '+$400K', color: '#3b82f6', icon: '💰' },
+              { label: 'ROI', value: '340%', change: '+45%', color: '#8b5cf6', icon: '📈' },
+              { label: 'Status', value: 'HEALTHY', change: '99.9% uptime', color: '#10b981', icon: '✅' }
+            ].map((item, idx) => (
+              <div key={idx} className="card" style={{ borderTop: `4px solid ${item.color}` }}>
+                <div className="card-body" style={{ textAlign: 'center', padding: '24px' }}>
+                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>{item.icon}</div>
+                  <div style={{ fontSize: '28px', fontWeight: '700', color: item.color }}>{item.value}</div>
+                  <div style={{ fontSize: '14px', color: '#6b7280', marginBottom: '4px' }}>{item.label}</div>
+                  <div style={{ fontSize: '12px', color: '#10b981' }}>{item.change}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#eff6ff' }}><h3 className="card-title" style={{ color: '#1e40af' }}>📊 Key Highlights</h3></div>
+              <div className="card-body">
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  {[
+                    { title: 'Fraud Prevention', value: '$4.2M', desc: 'Losses prevented YTD' },
+                    { title: 'False Positives', value: '-65%', desc: 'Reduction vs baseline' },
+                    { title: 'Processing Speed', value: '23ms', desc: 'Avg inference latency' },
+                    { title: 'Coverage', value: '100%', desc: 'All transaction types' }
+                  ].map((item, idx) => (
+                    <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '12px' }}>
+                      <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>{item.title}</div>
+                      <div style={{ fontSize: '24px', fontWeight: '700', color: '#1f2937' }}>{item.value}</div>
+                      <div style={{ fontSize: '11px', color: '#9ca3af' }}>{item.desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>✅ Recommendations</h3></div>
+              <div className="card-body">
+                <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', lineHeight: '2' }}>
+                  <li>Proceed with Phase 2 deployment</li>
+                  <li>Increase training budget by 15%</li>
+                  <li>Expand to credit card domain</li>
+                  <li>Schedule quarterly model review</li>
+                </ul>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* API Docs Tab */}
+      {/* API Docs Tab - Enhanced */}
       {activeTab === 'api-docs' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'var(--gray-800)', color: 'white' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #1f2937 0%, #111827 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px' }}>API Documentation</h2>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '20px' }}>
+                <div>
+                  <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>API Documentation</h2>
+                  <p style={{ opacity: 0.8, marginBottom: '16px' }}>RESTful API for ML model inference, explanations, and monitoring</p>
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <span style={{ background: '#10b981', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>v2.3.1</span>
+                    <span style={{ background: '#3b82f6', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>OpenAPI 3.0</span>
+                    <span style={{ background: '#8b5cf6', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>Rate Limit: 10K/min</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={{ background: '#374151', border: 'none', ...getButtonStyle('download-openapi') }} onClick={() => handleAction('download-openapi', 'Download', 'Generating OpenAPI spec', 2000)} disabled={isButtonLoading('download-openapi')}>{getButtonText('download-openapi', '📄 OpenAPI Spec', 'Generating...')}</button>
+                  <button className="btn" style={{ background: '#10b981', border: 'none', ...getButtonStyle('try-api') }} onClick={() => handleAction('try-api', 'Launch', 'Starting Swagger UI', 1500)} disabled={isButtonLoading('try-api')}>{getButtonText('try-api', '🚀 Try It', 'Launching...')}</button>
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Authentication */}
           <div className="card">
-            <div className="card-header"><h3 className="card-title">Endpoints</h3></div>
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🔐 Authentication</h3></div>
             <div className="card-body">
-              <div className="table-container">
-                <table className="data-table">
-                  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
-                  <tbody>
-                    <tr><td><span style={{ background: 'var(--success-100)', color: 'var(--success-700)', padding: '4px 12px', borderRadius: '4px', fontWeight: '600' }}>POST</span></td><td><code>/api/v1/predict</code></td><td>Real-time prediction</td></tr>
-                    <tr><td><span style={{ background: 'var(--success-100)', color: 'var(--success-700)', padding: '4px 12px', borderRadius: '4px', fontWeight: '600' }}>POST</span></td><td><code>/api/v1/batch</code></td><td>Batch prediction</td></tr>
-                    <tr><td><span style={{ background: 'var(--primary-100)', color: 'var(--primary-700)', padding: '4px 12px', borderRadius: '4px', fontWeight: '600' }}>GET</span></td><td><code>/api/v1/explain/{'{id}'}</code></td><td>SHAP explanation</td></tr>
-                    <tr><td><span style={{ background: 'var(--primary-100)', color: 'var(--primary-700)', padding: '4px 12px', borderRadius: '4px', fontWeight: '600' }}>GET</span></td><td><code>/api/v1/health</code></td><td>Health check</td></tr>
-                  </tbody>
-                </table>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+                <div>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>API Key Authentication</h4>
+                  <pre style={{ background: '#1f2937', color: '#10b981', padding: '16px', borderRadius: '8px', fontSize: '12px', overflow: 'auto' }}>{`curl -X POST https://api.bank.com/v1/predict \\
+  -H "Authorization: Bearer <API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"transaction_id": "TXN-12345"}'`}</pre>
+                </div>
+                <div>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px' }}>OAuth 2.0 (Service Account)</h4>
+                  <pre style={{ background: '#1f2937', color: '#3b82f6', padding: '16px', borderRadius: '8px', fontSize: '12px', overflow: 'auto' }}>{`POST /oauth/token
+{
+  "grant_type": "client_credentials",
+  "client_id": "<CLIENT_ID>",
+  "client_secret": "<CLIENT_SECRET>"
+}`}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Endpoints */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>🔌 API Endpoints</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {[
+                  { method: 'POST', path: '/api/v1/predict', desc: 'Real-time fraud prediction', latency: '23ms', rateLimit: '10K/min', auth: 'API Key', status: 'stable' },
+                  { method: 'POST', path: '/api/v1/batch', desc: 'Batch prediction (up to 1000 transactions)', latency: '2-5s', rateLimit: '100/min', auth: 'OAuth', status: 'stable' },
+                  { method: 'GET', path: '/api/v1/explain/{txn_id}', desc: 'SHAP explanation for prediction', latency: '150ms', rateLimit: '1K/min', auth: 'API Key', status: 'stable' },
+                  { method: 'GET', path: '/api/v1/health', desc: 'Service health check', latency: '5ms', rateLimit: 'unlimited', auth: 'None', status: 'stable' },
+                  { method: 'GET', path: '/api/v1/metrics', desc: 'Prometheus metrics', latency: '10ms', rateLimit: '100/min', auth: 'Internal', status: 'stable' },
+                  { method: 'POST', path: '/api/v1/feedback', desc: 'Submit prediction feedback', latency: '50ms', rateLimit: '5K/min', auth: 'API Key', status: 'stable' },
+                  { method: 'GET', path: '/api/v1/model/info', desc: 'Current model metadata', latency: '10ms', rateLimit: '1K/min', auth: 'API Key', status: 'stable' },
+                  { method: 'POST', path: '/api/v2/predict-stream', desc: 'Streaming predictions (WebSocket)', latency: '15ms', rateLimit: '5K/min', auth: 'OAuth', status: 'beta' }
+                ].map((endpoint, idx) => (
+                  <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ background: endpoint.method === 'POST' ? '#10b981' : '#3b82f6', color: 'white', padding: '4px 12px', borderRadius: '4px', fontWeight: '600', fontSize: '12px' }}>{endpoint.method}</span>
+                      <code style={{ fontWeight: '600', fontSize: '14px' }}>{endpoint.path}</code>
+                      {endpoint.status === 'beta' && <span style={{ background: '#f59e0b', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '10px' }}>BETA</span>}
+                    </div>
+                    <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '8px' }}>{endpoint.desc}</p>
+                    <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: '#9ca3af' }}>
+                      <span>⚡ {endpoint.latency}</span>
+                      <span>🔄 {endpoint.rateLimit}</span>
+                      <span>🔐 {endpoint.auth}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Request/Response Examples */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#dcfce7' }}><h3 className="card-title" style={{ color: '#166534' }}>📤 Request Example</h3></div>
+              <div className="card-body">
+                <pre style={{ background: '#1f2937', color: '#e5e7eb', padding: '16px', borderRadius: '8px', fontSize: '11px', overflow: 'auto', maxHeight: '300px' }}>{`POST /api/v1/predict
+Content-Type: application/json
+Authorization: Bearer <API_KEY>
+
+{
+  "transaction_id": "TXN-89421",
+  "amount": 2500.00,
+  "currency": "USD",
+  "merchant_id": "MRC-1234",
+  "merchant_category": "electronics",
+  "customer_id": "CUS-5678",
+  "timestamp": "2025-01-15T14:30:00Z",
+  "location": {
+    "lat": 40.7128,
+    "lng": -74.0060,
+    "country": "US"
+  },
+  "device": {
+    "type": "mobile",
+    "fingerprint": "abc123..."
+  },
+  "options": {
+    "explain": true,
+    "threshold": 0.5
+  }
+}`}</pre>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#f0fdf4' }}><h3 className="card-title" style={{ color: '#166534' }}>📥 Response Example</h3></div>
+              <div className="card-body">
+                <pre style={{ background: '#1f2937', color: '#e5e7eb', padding: '16px', borderRadius: '8px', fontSize: '11px', overflow: 'auto', maxHeight: '300px' }}>{`HTTP/1.1 200 OK
+Content-Type: application/json
+X-Request-ID: req_abc123
+X-Model-Version: v2.3.1
+
+{
+  "prediction": {
+    "is_fraud": true,
+    "confidence": 0.87,
+    "risk_score": 847,
+    "risk_level": "HIGH"
+  },
+  "explanation": {
+    "top_features": [
+      {"feature": "amount_zscore", "impact": 0.32},
+      {"feature": "velocity_1h", "impact": 0.28},
+      {"feature": "geo_distance", "impact": 0.18}
+    ],
+    "reasoning": "Unusual amount for customer"
+  },
+  "metadata": {
+    "model_version": "v2.3.1",
+    "latency_ms": 23,
+    "timestamp": "2025-01-15T14:30:00.023Z"
+  },
+  "recommended_action": "BLOCK"
+}`}</pre>
+              </div>
+            </div>
+          </div>
+
+          {/* Error Codes */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef2f2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>⚠️ Error Codes</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#fef2f2' }}><th>Code</th><th>Status</th><th>Description</th><th>Resolution</th></tr></thead>
+                <tbody>
+                  <tr><td><code>400</code></td><td>Bad Request</td><td>Invalid request payload</td><td>Check JSON format and required fields</td></tr>
+                  <tr><td><code>401</code></td><td>Unauthorized</td><td>Missing or invalid API key</td><td>Verify Authorization header</td></tr>
+                  <tr><td><code>403</code></td><td>Forbidden</td><td>Insufficient permissions</td><td>Check API key scope</td></tr>
+                  <tr><td><code>429</code></td><td>Too Many Requests</td><td>Rate limit exceeded</td><td>Implement exponential backoff</td></tr>
+                  <tr><td><code>500</code></td><td>Internal Error</td><td>Server error</td><td>Retry with X-Request-ID for support</td></tr>
+                  <tr><td><code>503</code></td><td>Service Unavailable</td><td>Model not ready</td><td>Check /health endpoint</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* SDKs & Libraries */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#f3e8ff' }}><h3 className="card-title" style={{ color: '#7c3aed' }}>📦 SDKs & Client Libraries</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { lang: 'Python', icon: '🐍', version: 'v2.3.0', install: 'pip install fraud-sdk' },
+                  { lang: 'Java', icon: '☕', version: 'v2.3.0', install: 'maven: fraud-sdk:2.3.0' },
+                  { lang: 'Node.js', icon: '💚', version: 'v2.3.0', install: 'npm install @bank/fraud-sdk' },
+                  { lang: 'Go', icon: '🔷', version: 'v2.3.0', install: 'go get github.com/bank/fraud-sdk' }
+                ].map((sdk, idx) => (
+                  <div key={idx} style={{ background: '#f9fafb', padding: '16px', borderRadius: '8px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '32px', marginBottom: '8px' }}>{sdk.icon}</div>
+                    <div style={{ fontWeight: '600', marginBottom: '4px' }}>{sdk.lang}</div>
+                    <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '8px' }}>{sdk.version}</div>
+                    <code style={{ fontSize: '10px', background: '#e5e7eb', padding: '4px 8px', borderRadius: '4px' }}>{sdk.install}</code>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -12315,21 +15099,97 @@ class EnsemblePredictor:
       {/* Runbook Tab */}
       {activeTab === 'runbook' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--danger-600) 0%, var(--danger-800) 100%)', color: 'white' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 50%, #991b1b 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px' }}>Operational Runbook</h2>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>📋 Operational Runbook & Incident Response</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Step-by-step procedures for operations, troubleshooting, and incident management</p>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>12</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Procedures</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>8</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Alert Rules</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>5</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Escalation Levels</div></div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '28px', fontWeight: '700' }}>24/7</div><div style={{ fontSize: '12px', opacity: 0.9 }}>Support</div></div>
+              </div>
             </div>
           </div>
+
+          {/* Quick Actions */}
           <div className="card">
-            <div className="card-header"><h3 className="card-title">Common Issues</h3></div>
+            <div className="card-header" style={{ background: '#fef2f2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>⚡ Quick Actions</h3></div>
             <div className="card-body">
-              <div style={{ background: 'var(--danger-50)', padding: '16px', borderRadius: '8px', borderLeft: '4px solid var(--danger-500)', marginBottom: '16px' }}>
-                <h4 style={{ margin: '0 0 8px 0' }}>High Latency</h4>
-                <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px' }}><li>Check Redis cache</li><li>Verify feature store</li><li>Scale pods if CPU &gt; 80%</li></ol>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <button className="btn btn-danger" style={getButtonStyle('restart-service')} onClick={() => handleAction('restart-service', 'Restart', 'Restarting inference service', 5000)} disabled={isButtonLoading('restart-service')}>{getButtonText('restart-service', '🔄 Restart Service', 'Restarting...')}</button>
+                <button className="btn btn-warning" style={getButtonStyle('clear-cache')} onClick={() => handleAction('clear-cache', 'Clear', 'Clearing Redis cache', 3000)} disabled={isButtonLoading('clear-cache')}>{getButtonText('clear-cache', '🗑️ Clear Cache', 'Clearing...')}</button>
+                <button className="btn btn-primary" style={getButtonStyle('health-check')} onClick={() => handleAction('health-check', 'Health Check', 'Running health diagnostics', 4000)} disabled={isButtonLoading('health-check')}>{getButtonText('health-check', '🏥 Health Check', 'Checking...')}</button>
+                <button className="btn btn-secondary" style={getButtonStyle('export-logs')} onClick={() => handleAction('export-logs', 'Export', 'Collecting logs', 3000)} disabled={isButtonLoading('export-logs')}>{getButtonText('export-logs', '📥 Export Logs', 'Exporting...')}</button>
               </div>
-              <div style={{ background: 'var(--warning-50)', padding: '16px', borderRadius: '8px', borderLeft: '4px solid var(--warning-500)' }}>
-                <h4 style={{ margin: '0 0 8px 0' }}>Model Drift</h4>
-                <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px' }}><li>Review drift dashboard</li><li>Analyze features</li><li>Trigger retraining</li></ol>
+            </div>
+          </div>
+
+          {/* Common Issues */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🔧 Troubleshooting Guide</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gap: '16px' }}>
+                {[
+                  { severity: 'critical', title: 'Service Down / 5xx Errors', symptoms: 'API returning 500, health check failing', steps: ['Check pod status: kubectl get pods', 'Review logs: kubectl logs -f <pod>', 'Verify DB connection', 'Check feature store health', 'Restart if needed: kubectl rollout restart'], escalation: 'Page on-call immediately' },
+                  { severity: 'high', title: 'High Latency (>100ms)', symptoms: 'P99 latency spike, slow predictions', steps: ['Check Redis cache hit rate', 'Verify feature store latency', 'Review CPU/Memory usage', 'Scale pods if CPU > 80%', 'Check network latency'], escalation: 'Notify team in 15 mins' },
+                  { severity: 'medium', title: 'Model Drift Detected', symptoms: 'Accuracy dropping, distribution shift alerts', steps: ['Review drift dashboard metrics', 'Analyze feature distributions', 'Check for data quality issues', 'Validate recent data changes', 'Schedule retraining if needed'], escalation: 'Create ticket, resolve in 24h' },
+                  { severity: 'low', title: 'Increased False Positives', symptoms: 'More legitimate transactions flagged', steps: ['Review recent model changes', 'Check threshold settings', 'Analyze affected segments', 'Adjust confidence thresholds', 'Monitor for improvement'], escalation: 'Review in next standup' }
+                ].map((issue, idx) => (
+                  <div key={idx} style={{ background: issue.severity === 'critical' ? '#fef2f2' : issue.severity === 'high' ? '#fff7ed' : issue.severity === 'medium' ? '#fefce8' : '#f0fdf4', padding: '20px', borderRadius: '12px', borderLeft: `4px solid ${issue.severity === 'critical' ? '#dc2626' : issue.severity === 'high' ? '#f97316' : issue.severity === 'medium' ? '#eab308' : '#22c55e'}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <h4 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>{issue.title}</h4>
+                      <span style={{ background: issue.severity === 'critical' ? '#dc2626' : issue.severity === 'high' ? '#f97316' : issue.severity === 'medium' ? '#eab308' : '#22c55e', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase' }}>{issue.severity}</span>
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '12px' }}><strong>Symptoms:</strong> {issue.symptoms}</div>
+                    <div style={{ marginBottom: '12px' }}>
+                      <strong style={{ fontSize: '13px' }}>Resolution Steps:</strong>
+                      <ol style={{ margin: '8px 0 0 0', paddingLeft: '20px', fontSize: '13px' }}>
+                        {issue.steps.map((step, i) => <li key={i} style={{ marginBottom: '4px' }}>{step}</li>)}
+                      </ol>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#6b7280' }}><strong>Escalation:</strong> {issue.escalation}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Escalation Matrix */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#ede9fe' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>📞 Escalation Matrix</h3></div>
+              <div className="card-body">
+                <table className="table" style={{ fontSize: '12px' }}>
+                  <thead><tr style={{ background: '#ede9fe' }}><th>Level</th><th>Contact</th><th>Response</th><th>Criteria</th></tr></thead>
+                  <tbody>
+                    <tr><td><span style={{ background: '#22c55e', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>L1</span></td><td>On-call Engineer</td><td>15 min</td><td>All alerts</td></tr>
+                    <tr><td><span style={{ background: '#eab308', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>L2</span></td><td>Team Lead</td><td>30 min</td><td>High severity</td></tr>
+                    <tr><td><span style={{ background: '#f97316', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>L3</span></td><td>Engineering Manager</td><td>1 hour</td><td>Service down</td></tr>
+                    <tr><td><span style={{ background: '#dc2626', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>L4</span></td><td>VP Engineering</td><td>2 hours</td><td>Business impact</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>🔗 Useful Links</h3></div>
+              <div className="card-body">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {[
+                    { name: 'Grafana Dashboard', url: '#', icon: '📊' },
+                    { name: 'PagerDuty', url: '#', icon: '🚨' },
+                    { name: 'Slack #ml-ops', url: '#', icon: '💬' },
+                    { name: 'Confluence Wiki', url: '#', icon: '📚' },
+                    { name: 'Jira Board', url: '#', icon: '📋' },
+                    { name: 'AWS Console', url: '#', icon: '☁️' }
+                  ].map((link, idx) => (
+                    <a key={idx} href={link.url} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', background: '#f9fafb', borderRadius: '8px', textDecoration: 'none', color: '#374151', fontSize: '13px' }}>
+                      <span>{link.icon}</span>
+                      <span>{link.name}</span>
+                      <span style={{ marginLeft: 'auto', color: '#9ca3af' }}>→</span>
+                    </a>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -12339,24 +15199,283 @@ class EnsemblePredictor:
       {/* Roadmap Tab */}
       {activeTab === 'roadmap' && (
         <div className="grid grid-cols-1" style={{ gap: '24px' }}>
-          <div className="card" style={{ background: 'linear-gradient(135deg, var(--success-500) 0%, var(--success-700) 100%)', color: 'white' }}>
+          {/* Header */}
+          <div className="card" style={{ background: 'linear-gradient(135deg, #059669 0%, #047857 50%, #065f46 100%)', color: 'white' }}>
             <div className="card-body" style={{ padding: '32px' }}>
-              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px' }}>Product Roadmap</h2>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>🗺️ AI/ML Product Roadmap 2025-2026</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Strategic development timeline from MVP to enterprise-scale AI platform</p>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700' }}>4</div>
+                  <div style={{ fontSize: '12px', opacity: 0.9 }}>Phases</div>
+                </div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700' }}>18</div>
+                  <div style={{ fontSize: '12px', opacity: 0.9 }}>Milestones</div>
+                </div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700' }}>12</div>
+                  <div style={{ fontSize: '12px', opacity: 0.9 }}>Months</div>
+                </div>
+                <div style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px' }}>
+                  <div style={{ fontSize: '24px', fontWeight: '700' }}>$2.4M</div>
+                  <div style={{ fontSize: '12px', opacity: 0.9 }}>Budget</div>
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Timeline Visual */}
           <div className="card">
-            <div className="card-header"><h3 className="card-title">Upcoming Features</h3></div>
+            <div className="card-header" style={{ background: '#ecfdf5' }}>
+              <h3 className="card-title">📅 Timeline Overview</h3>
+            </div>
             <div className="card-body">
-              <div className="table-container">
-                <table className="data-table">
-                  <thead><tr><th>Feature</th><th>Quarter</th><th>Priority</th><th>Status</th></tr></thead>
+              <div style={{ display: 'flex', justifyContent: 'space-between', position: 'relative', padding: '20px 0' }}>
+                <div style={{ position: 'absolute', top: '50%', left: '5%', right: '5%', height: '4px', background: 'linear-gradient(90deg, #10b981, #3b82f6, #8b5cf6, #f59e0b)', borderRadius: '2px' }} />
+                {[
+                  { q: 'Q1 2025', phase: 'Foundation', color: '#10b981', status: 'In Progress' },
+                  { q: 'Q2 2025', phase: 'Scale', color: '#3b82f6', status: 'Planned' },
+                  { q: 'Q3 2025', phase: 'Optimize', color: '#8b5cf6', status: 'Planned' },
+                  { q: 'Q4 2025', phase: 'Innovate', color: '#f59e0b', status: 'Future' }
+                ].map((item, idx) => (
+                  <div key={idx} style={{ textAlign: 'center', zIndex: 1 }}>
+                    <div style={{ width: '60px', height: '60px', borderRadius: '50%', background: item.color, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700', fontSize: '12px', margin: '0 auto 8px', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }}>{item.q}</div>
+                    <div style={{ fontWeight: '600', color: item.color }}>{item.phase}</div>
+                    <div style={{ fontSize: '11px', color: '#6b7280' }}>{item.status}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Phase 1: Foundation */}
+          <div className="card" style={{ borderLeft: '4px solid #10b981' }}>
+            <div className="card-header" style={{ background: '#ecfdf5' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#10b981', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700' }}>1</div>
+                <div>
+                  <h3 className="card-title" style={{ color: '#065f46' }}>Phase 1: Foundation (Q1 2025)</h3>
+                  <p className="card-subtitle">Core infrastructure and MVP deployment</p>
+                </div>
+              </div>
+              <span style={{ background: '#10b981', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: '600' }}>IN PROGRESS</span>
+            </div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ background: '#ecfdf5' }}>
+                    <th style={{ color: '#065f46' }}>Milestone</th>
+                    <th style={{ color: '#065f46' }}>Target Date</th>
+                    <th style={{ color: '#065f46' }}>Owner</th>
+                    <th style={{ color: '#065f46' }}>Dependencies</th>
+                    <th style={{ color: '#065f46' }}>Status</th>
+                    <th style={{ color: '#065f46' }}>Progress</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Data Pipeline Setup</td><td>Jan 15</td><td>Data Team</td><td>Cloud Infra</td><td><span style={{ background: '#10b981', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Complete</span></td><td><div style={{ width: '100px', height: '8px', background: '#e5e7eb', borderRadius: '4px' }}><div style={{ width: '100%', height: '100%', background: '#10b981', borderRadius: '4px' }} /></div></td></tr>
+                  <tr><td>Model v1.0 Training</td><td>Feb 1</td><td>ML Team</td><td>Data Pipeline</td><td><span style={{ background: '#10b981', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Complete</span></td><td><div style={{ width: '100px', height: '8px', background: '#e5e7eb', borderRadius: '4px' }}><div style={{ width: '100%', height: '100%', background: '#10b981', borderRadius: '4px' }} /></div></td></tr>
+                  <tr><td>API Gateway Deploy</td><td>Feb 15</td><td>Platform Team</td><td>Model v1.0</td><td><span style={{ background: '#f59e0b', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>In Progress</span></td><td><div style={{ width: '100px', height: '8px', background: '#e5e7eb', borderRadius: '4px' }}><div style={{ width: '75%', height: '100%', background: '#f59e0b', borderRadius: '4px' }} /></div></td></tr>
+                  <tr><td>Monitoring Setup</td><td>Mar 1</td><td>DevOps Team</td><td>API Gateway</td><td><span style={{ background: '#3b82f6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td><td><div style={{ width: '100px', height: '8px', background: '#e5e7eb', borderRadius: '4px' }}><div style={{ width: '25%', height: '100%', background: '#3b82f6', borderRadius: '4px' }} /></div></td></tr>
+                  <tr><td>MVP Go-Live</td><td>Mar 15</td><td>Product Team</td><td>All Above</td><td><span style={{ background: '#6b7280', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Pending</span></td><td><div style={{ width: '100px', height: '8px', background: '#e5e7eb', borderRadius: '4px' }}><div style={{ width: '0%', height: '100%', background: '#6b7280', borderRadius: '4px' }} /></div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Phase 2: Scale */}
+          <div className="card" style={{ borderLeft: '4px solid #3b82f6' }}>
+            <div className="card-header" style={{ background: '#eff6ff' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#3b82f6', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700' }}>2</div>
+                <div>
+                  <h3 className="card-title" style={{ color: '#1e40af' }}>Phase 2: Scale (Q2 2025)</h3>
+                  <p className="card-subtitle">Performance optimization and feature expansion</p>
+                </div>
+              </div>
+              <span style={{ background: '#3b82f6', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: '600' }}>PLANNED</span>
+            </div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ background: '#eff6ff' }}>
+                    <th style={{ color: '#1e40af' }}>Milestone</th>
+                    <th style={{ color: '#1e40af' }}>Target Date</th>
+                    <th style={{ color: '#1e40af' }}>Owner</th>
+                    <th style={{ color: '#1e40af' }}>Dependencies</th>
+                    <th style={{ color: '#1e40af' }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Real-time Explainability Engine</td><td>Apr 15</td><td>ML Team</td><td>MVP Go-Live</td><td><span style={{ background: '#3b82f6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                  <tr><td>Transformer Ensemble Integration</td><td>May 1</td><td>Research Team</td><td>Explainability</td><td><span style={{ background: '#3b82f6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                  <tr><td>Auto-scaling Infrastructure</td><td>May 15</td><td>Platform Team</td><td>Monitoring</td><td><span style={{ background: '#3b82f6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                  <tr><td>A/B Testing Framework</td><td>Jun 1</td><td>Data Team</td><td>Auto-scaling</td><td><span style={{ background: '#3b82f6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                  <tr><td>10x Traffic Capacity</td><td>Jun 15</td><td>DevOps Team</td><td>All Above</td><td><span style={{ background: '#3b82f6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Phase 3: Optimize */}
+          <div className="card" style={{ borderLeft: '4px solid #8b5cf6' }}>
+            <div className="card-header" style={{ background: '#f5f3ff' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#8b5cf6', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700' }}>3</div>
+                <div>
+                  <h3 className="card-title" style={{ color: '#5b21b6' }}>Phase 3: Optimize (Q3 2025)</h3>
+                  <p className="card-subtitle">Efficiency improvements and cost optimization</p>
+                </div>
+              </div>
+              <span style={{ background: '#8b5cf6', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: '600' }}>PLANNED</span>
+            </div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ background: '#f5f3ff' }}>
+                    <th style={{ color: '#5b21b6' }}>Milestone</th>
+                    <th style={{ color: '#5b21b6' }}>Target Date</th>
+                    <th style={{ color: '#5b21b6' }}>Owner</th>
+                    <th style={{ color: '#5b21b6' }}>Expected Impact</th>
+                    <th style={{ color: '#5b21b6' }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Auto-retraining Pipeline</td><td>Jul 15</td><td>MLOps Team</td><td>-80% manual effort</td><td><span style={{ background: '#8b5cf6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                  <tr><td>Model Compression (Distillation)</td><td>Aug 1</td><td>ML Team</td><td>2x faster inference</td><td><span style={{ background: '#8b5cf6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                  <tr><td>Feature Store Implementation</td><td>Aug 15</td><td>Data Team</td><td>-60% feature eng time</td><td><span style={{ background: '#8b5cf6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                  <tr><td>Cost Optimization (FinOps)</td><td>Sep 1</td><td>Platform Team</td><td>-30% cloud costs</td><td><span style={{ background: '#8b5cf6', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Planned</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Phase 4: Innovate */}
+          <div className="card" style={{ borderLeft: '4px solid #f59e0b' }}>
+            <div className="card-header" style={{ background: '#fffbeb' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#f59e0b', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700' }}>4</div>
+                <div>
+                  <h3 className="card-title" style={{ color: '#92400e' }}>Phase 4: Innovate (Q4 2025)</h3>
+                  <p className="card-subtitle">Next-gen capabilities and advanced AI features</p>
+                </div>
+              </div>
+              <span style={{ background: '#f59e0b', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: '600' }}>FUTURE</span>
+            </div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ background: '#fffbeb' }}>
+                    <th style={{ color: '#92400e' }}>Milestone</th>
+                    <th style={{ color: '#92400e' }}>Target Date</th>
+                    <th style={{ color: '#92400e' }}>Owner</th>
+                    <th style={{ color: '#92400e' }}>Innovation Type</th>
+                    <th style={{ color: '#92400e' }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>LLM-powered Fraud Narratives</td><td>Oct 15</td><td>Research Team</td><td>🧠 GenAI</td><td><span style={{ background: '#f59e0b', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Future</span></td></tr>
+                  <tr><td>Graph Neural Networks</td><td>Nov 1</td><td>ML Team</td><td>🔗 Network Analysis</td><td><span style={{ background: '#f59e0b', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Future</span></td></tr>
+                  <tr><td>Federated Learning POC</td><td>Nov 15</td><td>Research Team</td><td>🔒 Privacy-preserving</td><td><span style={{ background: '#f59e0b', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Future</span></td></tr>
+                  <tr><td>Autonomous Decision System</td><td>Dec 1</td><td>Product Team</td><td>🤖 Full Automation</td><td><span style={{ background: '#f59e0b', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '11px' }}>Future</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Resource Allocation */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#fef2f2' }}>
+                <h3 className="card-title" style={{ color: '#991b1b' }}>👥 Resource Allocation</h3>
+              </div>
+              <div className="card-body">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {[
+                    { team: 'ML Engineering', fte: 5, pct: 30, color: '#3b82f6' },
+                    { team: 'Data Engineering', fte: 3, pct: 20, color: '#10b981' },
+                    { team: 'Platform/DevOps', fte: 3, pct: 20, color: '#8b5cf6' },
+                    { team: 'Research', fte: 2, pct: 15, color: '#f59e0b' },
+                    { team: 'Product/PM', fte: 2, pct: 15, color: '#ef4444' }
+                  ].map((item, idx) => (
+                    <div key={idx}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                        <span style={{ fontWeight: '500' }}>{item.team}</span>
+                        <span style={{ color: '#6b7280' }}>{item.fte} FTE ({item.pct}%)</span>
+                      </div>
+                      <div style={{ height: '8px', background: '#e5e7eb', borderRadius: '4px' }}>
+                        <div style={{ width: `${item.pct * 3}%`, height: '100%', background: item.color, borderRadius: '4px' }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="card-header" style={{ background: '#fef3c7' }}>
+                <h3 className="card-title" style={{ color: '#92400e' }}>⚠️ Key Risks & Mitigations</h3>
+              </div>
+              <div className="card-body">
+                <table className="table" style={{ fontSize: '12px' }}>
+                  <thead>
+                    <tr style={{ background: '#fef3c7' }}>
+                      <th>Risk</th>
+                      <th>Impact</th>
+                      <th>Mitigation</th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    <tr><td>Real-time Explainability</td><td>Q1 2025</td><td><span style={{ color: 'var(--danger-600)' }}>High</span></td><td><span className="status-badge warning"><span className="status-dot" />In Progress</span></td></tr>
-                    <tr><td>Transformer Ensemble</td><td>Q2 2025</td><td><span style={{ color: 'var(--danger-600)' }}>High</span></td><td><span className="status-badge info"><span className="status-dot" />Planned</span></td></tr>
-                    <tr><td>Auto-retraining</td><td>Q2 2025</td><td><span style={{ color: 'var(--warning-600)' }}>Medium</span></td><td><span className="status-badge info"><span className="status-dot" />Planned</span></td></tr>
+                    <tr><td>Data quality issues</td><td><span style={{ color: '#dc2626' }}>High</span></td><td>Automated validation</td></tr>
+                    <tr><td>Model drift</td><td><span style={{ color: '#f59e0b' }}>Medium</span></td><td>Continuous monitoring</td></tr>
+                    <tr><td>Talent retention</td><td><span style={{ color: '#f59e0b' }}>Medium</span></td><td>Competitive packages</td></tr>
+                    <tr><td>Regulatory changes</td><td><span style={{ color: '#dc2626' }}>High</span></td><td>Compliance reviews</td></tr>
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+
+          {/* Success Metrics */}
+          <div className="card">
+            <div className="card-header" style={{ background: 'linear-gradient(135deg, #10b981, #059669)' }}>
+              <h3 className="card-title" style={{ color: 'white' }}>🎯 Success Metrics by Phase</h3>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { phase: 'Phase 1', metrics: ['MVP Live', '99% Uptime', '<100ms Latency', '10K TPS'] },
+                  { phase: 'Phase 2', metrics: ['95% Accuracy', '100K TPS', 'Real-time XAI', 'A/B Ready'] },
+                  { phase: 'Phase 3', metrics: ['Auto-retrain', '-30% Costs', '2x Faster', 'Feature Store'] },
+                  { phase: 'Phase 4', metrics: ['GenAI Enabled', 'GNN Live', 'Federated POC', 'Full Auto'] }
+                ].map((item, idx) => (
+                  <div key={idx} style={{ background: idx === 0 ? '#ecfdf5' : '#f9fafb', padding: '16px', borderRadius: '12px', border: idx === 0 ? '2px solid #10b981' : '1px solid #e5e7eb' }}>
+                    <div style={{ fontWeight: '700', marginBottom: '12px', color: idx === 0 ? '#065f46' : '#374151' }}>{item.phase}</div>
+                    <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: '#6b7280' }}>
+                      {item.metrics.map((m, i) => <li key={i} style={{ marginBottom: '4px' }}>{m}</li>)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="card">
+            <div className="card-body" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" style={getButtonStyle('export-roadmap')} onClick={() => handleAction('export-roadmap', 'Export', 'Generating roadmap PDF', 2500)} disabled={isButtonLoading('export-roadmap')}>
+                {getButtonText('export-roadmap', '📄 Export Roadmap PDF', 'Exporting...')}
+              </button>
+              <button className="btn btn-secondary" style={getButtonStyle('share-roadmap')} onClick={() => handleAction('share-roadmap', 'Share', 'Generating share link', 2000)} disabled={isButtonLoading('share-roadmap')}>
+                {getButtonText('share-roadmap', '🔗 Share with Stakeholders', 'Sharing...')}
+              </button>
+              <button className="btn btn-secondary" style={getButtonStyle('sync-jira')} onClick={() => handleAction('sync-jira', 'Sync', 'Syncing with Jira', 3000)} disabled={isButtonLoading('sync-jira')}>
+                {getButtonText('sync-jira', '🔄 Sync to Jira', 'Syncing...')}
+              </button>
+              <button className="btn btn-secondary" style={getButtonStyle('update-status')} onClick={() => handleAction('update-status', 'Update', 'Refreshing status', 1500)} disabled={isButtonLoading('update-status')}>
+                {getButtonText('update-status', '📊 Update Status', 'Updating...')}
+              </button>
             </div>
           </div>
         </div>
@@ -12379,7 +15498,7 @@ class EnsemblePredictor:
                 <div><label style={{ display: 'block', marginBottom: '6px', fontWeight: '600' }}>Date Range</label><select style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--gray-300)' }}><option>Last 30 Days</option><option>Last 90 Days</option><option>Last 1 Year</option></select></div>
                 <div><label style={{ display: 'block', marginBottom: '6px', fontWeight: '600' }}>Sample Size</label><select style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--gray-300)' }}><option>50,000 rows</option><option>100,000 rows</option><option>Full Dataset</option></select></div>
               </div>
-              <button className="btn btn-primary" onClick={() => setNotification({ type: 'success', message: 'Loaded: 50,000 rows, 45 features' })}>Load Data</button>
+              <button className="btn btn-primary" style={getButtonStyle('action-39')} onClick={() => handleAction('action-39', 'Loaded: 50,000 rows, 45 fea...', 'Loaded: 50,000 rows, 45 features', 2000)} disabled={isButtonLoading('action-39')}>{getButtonText('action-39', 'Load Data', 'Loading...')}</button>
             </div>
           </div>
           <div className="card">
@@ -12393,7 +15512,7 @@ class EnsemblePredictor:
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', background: 'var(--gray-50)', borderRadius: '8px' }}><input type="checkbox" defaultChecked /> Encode (Target)</label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', background: 'var(--gray-50)', borderRadius: '8px' }}><input type="checkbox" defaultChecked /> SMOTE Balance</label>
               </div>
-              <button className="btn btn-success" onClick={() => setNotification({ type: 'success', message: 'Preprocessing complete!' })}>Apply</button>
+              <button className="btn btn-success" style={getButtonStyle('action-40')} onClick={() => handleAction('action-40', 'Preprocessing complete', 'Preprocessing complete!', 2500)} disabled={isButtonLoading('action-40')}>{getButtonText('action-40', 'Apply', 'Applying...')}</button>
             </div>
           </div>
           <div className="card">
@@ -12406,7 +15525,7 @@ class EnsemblePredictor:
                 <label style={{ padding: '10px 16px', background: 'var(--gray-50)', borderRadius: '8px' }}><input type="radio" name="fs" /> LASSO</label>
               </div>
               <div style={{ height: '200px', marginBottom: '16px' }}><ResponsiveContainer width="100%" height="100%"><BarChart data={[{ f: 'txn_amt', v: 0.25 }, { f: 'velocity', v: 0.18 }, { f: 'geo_dist', v: 0.15 }, { f: 'time', v: 0.12 }]} layout="vertical"><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="f" width={70} /><Tooltip /><Bar dataKey="v" fill="var(--warning-500)" /></BarChart></ResponsiveContainer></div>
-              <button className="btn btn-warning" onClick={() => setNotification({ type: 'success', message: '25 features selected' })}>Select</button>
+              <button className="btn btn-warning" style={getButtonStyle('action-41')} onClick={() => handleAction('action-41', '25 features selected', '25 features selected', 1500)} disabled={isButtonLoading('action-41')}>{getButtonText('action-41', 'Select', 'Selecting...')}</button>
             </div>
           </div>
           <div className="card">
@@ -12426,7 +15545,7 @@ class EnsemblePredictor:
                 <div><label style={{ fontSize: '12px' }}>CV</label><select style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--gray-300)' }}><option>5-Fold</option><option>10-Fold</option></select></div>
                 <div><label style={{ fontSize: '12px' }}>Metric</label><select style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--gray-300)' }}><option>AUC-ROC</option><option>F1</option></select></div>
               </div>
-              <button className="btn btn-danger" onClick={() => setNotification({ type: 'info', message: 'Training started...' })}>Train Models</button>
+              <button className="btn btn-danger" style={getButtonStyle('action-42')} onClick={() => handleAction('action-42', 'Training started', 'Training started...', 4000)} disabled={isButtonLoading('action-42')}>{getButtonText('action-42', 'Train Models', 'Training...')}</button>
             </div>
           </div>
           <div className="card">
@@ -12434,7 +15553,7 @@ class EnsemblePredictor:
             <div className="card-body">
               <div className="table-container" style={{ marginBottom: '16px' }}><table className="data-table"><thead><tr><th>Model</th><th>Acc</th><th>Prec</th><th>Recall</th><th>F1</th><th>AUC</th></tr></thead><tbody><tr><td>XGBoost</td><td>94.5%</td><td>93.2%</td><td>91.8%</td><td>92.5%</td><td>95.2%</td></tr><tr><td>LightGBM</td><td>93.8%</td><td>92.5%</td><td>90.2%</td><td>91.3%</td><td>94.1%</td></tr><tr style={{ background: 'var(--success-50)' }}><td><strong>Ensemble</strong></td><td><strong>95.8%</strong></td><td><strong>94.5%</strong></td><td><strong>93.2%</strong></td><td><strong>93.8%</strong></td><td><strong>96.5%</strong></td></tr></tbody></table></div>
               <div style={{ height: '220px', marginBottom: '16px' }}><ResponsiveContainer width="100%" height="100%"><BarChart data={[{ m: 'XGB', acc: 94.5, auc: 95.2 }, { m: 'LGB', acc: 93.8, auc: 94.1 }, { m: 'Cat', acc: 94.2, auc: 94.8 }, { m: 'Ens', acc: 95.8, auc: 96.5 }]}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="m" /><YAxis domain={[90, 100]} /><Tooltip /><Bar dataKey="acc" fill="var(--primary-500)" name="Accuracy" /><Bar dataKey="auc" fill="var(--purple-500)" name="AUC" /></BarChart></ResponsiveContainer></div>
-              <div style={{ display: 'flex', gap: '12px' }}><button className="btn btn-primary" onClick={() => setNotification({ type: 'success', message: 'Deployed!' })}>Deploy Best</button><button className="btn btn-secondary" onClick={() => handleExport('Results')}>Export</button></div>
+              <div style={{  display: 'flex', gap: '12px' , opacity: isButtonLoading('action-43') ? 0.7 : 1, cursor: isButtonLoading('action-43') ? 'not-allowed' : 'pointer' }}><button className="btn btn-primary" onClick={() => handleAction('action-43', 'Deployed', 'Deployed!', 3000)} disabled={isButtonLoading('action-43')}>{getButtonText('action-43', 'Deploy Best', 'Deploying...')}</button><button className="btn btn-secondary" onClick={() => handleExport('Results')} disabled={isButtonLoading('export-results')}>Export</button></div>
             </div>
           </div>
         </div>
@@ -12447,7 +15566,7 @@ class EnsemblePredictor:
             <div className="card-body" style={{ padding: '32px' }}>
               <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '16px', color: 'white' }}>Automated ML Pipeline</h2>
               <p style={{ opacity: 0.9, marginBottom: '16px' }}>One-click automated pipeline with real-time metrics at each phase.</p>
-              <button className="btn" style={{ background: 'white', color: '#f5576c', fontWeight: '600' }} onClick={() => setNotification({ type: 'success', message: 'Pipeline started! ETA: 15 min' })}>Run Full Pipeline</button>
+              <button className="btn" style={{  background: 'white', color: '#f5576c', fontWeight: '600' , opacity: isButtonLoading('action-44') ? 0.7 : 1, cursor: isButtonLoading('action-44') ? 'not-allowed' : 'pointer' }} onClick={() => handleAction('action-44', 'Pipeline started', 'Pipeline started! ETA: 15 min', 2500)} disabled={isButtonLoading('action-44')}>{getButtonText('action-44', 'Run Full Pipeline', 'Starting...')}</button>
             </div>
           </div>
           <div className="card">
@@ -12491,11 +15610,11 @@ class EnsemblePredictor:
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '16px', marginTop: '24px', flexWrap: 'wrap' }}>
-                <button className="btn" style={{ background: 'white', color: '#ff6b6b', fontWeight: '700', fontSize: '16px', padding: '14px 28px' }}>
+                <button className="btn" style={{  background: 'white', color: '#ff6b6b', fontWeight: '700', fontSize: '16px', padding: '14px 28px' , opacity: isButtonLoading('action-45') ? 0.7 : 1, cursor: isButtonLoading('action-45') ? 'not-allowed' : 'pointer' }} onClick={() => handleAction('action-45', 'Guided tour starting', 'Guided tour starting...', 2500)} disabled={isButtonLoading('action-45')}>
                   ▶️ Start Guided Tour
                 </button>
-                <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', fontWeight: '600', fontSize: '16px', padding: '14px 28px', border: '2px solid rgba(255,255,255,0.5)' }}>
-                  📊 Presentation Mode
+                <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', fontWeight: '600', fontSize: '16px', padding: '14px 28px', border: '2px solid rgba(255,255,255,0.5)', opacity: isButtonLoading('pres-mode') ? 0.7 : 1, cursor: isButtonLoading('pres-mode') ? 'not-allowed' : 'pointer' }} onClick={() => { setButtonLoading('pres-mode', true); setIsPresentationMode(!isPresentationMode); setNotification({ type: 'info', message: 'Toggling presentation mode...' }); setTimeout(() => { setButtonLoading('pres-mode', false); setNotification({ type: 'success', message: isPresentationMode ? 'Presentation mode disabled' : 'Presentation mode enabled' }); setTimeout(() => setNotification(null), 2000); }, 1500); }} disabled={isButtonLoading('pres-mode')}>
+                  {isButtonLoading('pres-mode') ? '⏳ Toggling...' : '📊 Presentation Mode'}
                 </button>
               </div>
             </div>
@@ -12586,7 +15705,7 @@ class EnsemblePredictor:
                     </select>
                   </div>
                 </div>
-                <button className="btn btn-primary" style={{ width: '100%', marginTop: '20px', padding: '14px', fontSize: '16px', fontWeight: '600' }} onClick={() => setNotification({ type: 'success', message: 'Prediction: FRAUD (87% confidence) - See explanation →' })}>
+                <button className="btn btn-primary" style={{  width: '100%', marginTop: '20px', padding: '14px', fontSize: '16px', fontWeight: '600' , opacity: isButtonLoading('action-46') ? 0.7 : 1, cursor: isButtonLoading('action-46') ? 'not-allowed' : 'pointer' }} onClick={() => handleAction('action-46', 'Prediction: FRAUD (87% conf...', 'Prediction: FRAUD (87% confidence) - See explanation →', 2500)} disabled={isButtonLoading('action-46')}>
                   🎯 Make Prediction
                 </button>
               </div>
@@ -12691,9 +15810,9 @@ class EnsemblePredictor:
                 <span style={{ fontSize: '20px' }}>⚖️</span> Before vs After ML Implementation
               </h3>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-sm" style={{ background: 'var(--gray-700)', color: 'white' }}>Before</button>
-                <button className="btn btn-sm btn-primary">After</button>
-                <button className="btn btn-sm" style={{ background: 'var(--success-500)', color: 'white' }}>Compare</button>
+                <button className="btn btn-sm" onClick={() => handleAction('action-47', 'Before state', 'Before state', 2000)} disabled={isButtonLoading('action-47')} style={{  background: 'var(--gray-700)', color: 'white' , opacity: isButtonLoading('action-47') ? 0.7 : 1, cursor: isButtonLoading('action-47') ? 'not-allowed' : 'pointer' }}>{getButtonText('action-47', 'Before', 'Processing...')}</button>
+                <button className="btn btn-sm btn-primary" style={getButtonStyle('action-48')} onClick={() => handleAction('action-48', 'After state', 'After state', 2000)} disabled={isButtonLoading('action-48')}>{getButtonText('action-48', 'After', 'Processing...')}</button>
+                <button className="btn btn-sm" onClick={() => handleAction('action-49', 'Comparison view', 'Comparison view', 2000)} disabled={isButtonLoading('action-49')} style={{  background: 'var(--success-500)', color: 'white' , opacity: isButtonLoading('action-49') ? 0.7 : 1, cursor: isButtonLoading('action-49') ? 'not-allowed' : 'pointer' }}>{getButtonText('action-49', 'Compare', 'Processing...')}</button>
               </div>
             </div>
             <div className="card-body">
@@ -12846,10 +15965,10 @@ class EnsemblePredictor:
                 ))}
               </div>
               <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'center', gap: '16px' }}>
-                <button className="btn btn-primary" style={{ padding: '14px 32px', fontSize: '16px', fontWeight: '600' }}>
+                <button className="btn btn-primary" style={{  padding: '14px 32px', fontSize: '16px', fontWeight: '600' , opacity: isButtonLoading('action-50') ? 0.7 : 1, cursor: isButtonLoading('action-50') ? 'not-allowed' : 'pointer' }} onClick={() => handleAction('action-50', 'Starting guided tour', 'Starting guided tour...', 2500)} disabled={isButtonLoading('action-50')}>
                   ▶️ Start Tour (20 min)
                 </button>
-                <button className="btn" style={{ padding: '14px 32px', fontSize: '16px', fontWeight: '600', border: '2px solid var(--primary-500)', color: 'var(--primary-600)' }}>
+                <button className="btn" style={{  padding: '14px 32px', fontSize: '16px', fontWeight: '600', border: '2px solid var(--primary-500)', color: 'var(--primary-600)' , opacity: isButtonLoading('action-51') ? 0.7 : 1, cursor: isButtonLoading('action-51') ? 'not-allowed' : 'pointer' }} onClick={() => handleAction('action-51', 'Section navigation coming soon', 'Section navigation coming soon', 1500)} disabled={isButtonLoading('action-51')}>
                   ⏭️ Skip to Section
                 </button>
               </div>
@@ -12889,20 +16008,66 @@ class EnsemblePredictor:
             </div>
             <div className="card-body">
               <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={() => setNotification({ type: 'info', message: 'Presentation mode activated - Fonts enlarged, animations enabled' })}>
-                  📺 Presentation Mode
+                <button className="btn btn-primary" onClick={() => handleAction('action-52', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-52')} style={{
+                    opacity: isPresentationMode ? 0.7 : 1,
+                    cursor: isPresentationMode ? 'not-allowed' : 'pointer'
+                  }} onClick={() => {
+                    setIsPresentationMode(true);
+                    setNotification({ type: 'info', message: 'Presentation mode activated - Fonts enlarged, animations enabled' });
+                    setTimeout(() => { setIsPresentationMode(false); setNotification(null); }, 3000);
+                  }} disabled={isPresentationMode}>
+                  {isPresentationMode ? '⏳ Activating...' : '📺 Presentation Mode'}
                 </button>
-                <button className="btn" style={{ border: '1px solid var(--gray-300)' }} onClick={() => setNotification({ type: 'success', message: 'Demo data loaded - Ready to present' })}>
-                  📊 Load Demo Data
+                <button className="btn" onClick={() => handleAction('action-53', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-53')} style={{
+                    border: '1px solid var(--gray-300)',
+                    opacity: isLoadingDemo ? 0.7 : 1,
+                    cursor: isLoadingDemo ? 'not-allowed' : 'pointer',
+                    background: isLoadingDemo ? '#f59e0b' : '',
+                    color: isLoadingDemo ? 'white' : ''
+                  }} onClick={() => {
+                    setIsLoadingDemo(true);
+                    setNotification({ type: 'success', message: 'Loading demo data...' });
+                    setTimeout(() => { setIsLoadingDemo(false); setNotification({ type: 'success', message: 'Demo data loaded - Ready to present' }); }, 2000);
+                    setTimeout(() => setNotification(null), 4000);
+                  }} disabled={isLoadingDemo}>
+                  {isLoadingDemo ? '⏳ Loading...' : '📊 Load Demo Data'}
                 </button>
-                <button className="btn" style={{ border: '1px solid var(--gray-300)' }} onClick={() => setNotification({ type: 'info', message: 'Simulating live predictions...' })}>
-                  🎭 Simulate Live
+                <button className="btn" style={{
+                    border: '1px solid var(--gray-300)',
+                    background: isSimulating ? '#10b981' : '',
+                    color: isSimulating ? 'white' : '',
+                    opacity: isSimulating ? 0.7 : 1,
+                    cursor: isSimulating ? 'not-allowed' : 'pointer'
+                  }} onClick={handleSimulate} disabled={isSimulating}>
+                  {isSimulating ? '⏳ Simulating...' : '🎭 Simulate Live'}
                 </button>
-                <button className="btn" style={{ border: '1px solid var(--gray-300)' }}>
-                  📤 Export Slides
+                <button className="btn" style={{
+                    border: '1px solid var(--gray-300)',
+                    opacity: isExporting ? 0.7 : 1,
+                    cursor: isExporting ? 'not-allowed' : 'pointer',
+                    background: isExporting ? '#8b5cf6' : '',
+                    color: isExporting ? 'white' : ''
+                  }} onClick={() => {
+                    setIsExporting(true);
+                    setNotification({ type: 'info', message: 'Generating slides...' });
+                    setTimeout(() => { setIsExporting(false); setNotification({ type: 'success', message: 'Slides exported successfully!' }); }, 3000);
+                    setTimeout(() => setNotification(null), 5000);
+                  }} disabled={isExporting}>
+                  {isExporting ? '⏳ Exporting...' : '📤 Export Slides'}
                 </button>
-                <button className="btn" style={{ border: '1px solid var(--gray-300)' }}>
-                  🔗 Share Demo Link
+                <button className="btn" style={{
+                    border: '1px solid var(--gray-300)',
+                    opacity: isSharing ? 0.7 : 1,
+                    cursor: isSharing ? 'not-allowed' : 'pointer',
+                    background: isSharing ? '#3b82f6' : '',
+                    color: isSharing ? 'white' : ''
+                  }} onClick={() => {
+                    setIsSharing(true);
+                    setNotification({ type: 'info', message: 'Generating share link...' });
+                    setTimeout(() => { setIsSharing(false); setNotification({ type: 'success', message: 'Link copied to clipboard: demo.bank.ai/share/xyz123' }); }, 2000);
+                    setTimeout(() => setNotification(null), 5000);
+                  }} disabled={isSharing}>
+                  {isSharing ? '⏳ Generating...' : '🔗 Share Demo Link'}
                 </button>
               </div>
             </div>
@@ -13584,6 +16749,1633 @@ class EnsemblePredictor:
           </div>
         </div>
       )}
+
+      {/* ==================== DEMO HUB ==================== */}
+      {activeTab === 'demo-hub' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #ff6b6b 0%, #feca57 50%, #ff9f43 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '32px' }}>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>🎯 Demo & Simulation Hub</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Interactive demonstrations, simulations, and operational scenarios - Click any tab below to view full content</p>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                {[{ label: 'ROI', value: '340%' }, { label: 'Savings', value: '$2.8M/yr' }, { label: 'Accuracy', value: '95.2%' }, { label: 'Latency', value: '23ms' }].map((m, i) => (
+                  <div key={i} style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '24px', fontWeight: '700' }}>{m.value}</div><div style={{ fontSize: '12px', opacity: 0.9 }}>{m.label}</div></div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* KPI & Value Proposition Summary */}
+          <div className="card" style={{ border: '2px solid #10b981' }}>
+            <div className="card-header" style={{ background: '#f0fdf4' }}>
+              <h3 className="card-title" style={{ color: '#065f46' }}>💰 Value Proposition & ROI Summary</h3>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                <div style={{ padding: '20px', background: 'linear-gradient(135deg, #dcfce7, #f0fdf4)', borderRadius: '12px', textAlign: 'center', border: '2px solid #10b981' }}>
+                  <div style={{ fontSize: '32px', fontWeight: '700', color: '#059669' }}>$2.8M</div>
+                  <div style={{ fontSize: '13px', fontWeight: '500', color: '#065f46' }}>Annual Savings</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>From fraud prevention</div>
+                </div>
+                <div style={{ padding: '20px', background: 'linear-gradient(135deg, #dbeafe, #eff6ff)', borderRadius: '12px', textAlign: 'center', border: '2px solid #3b82f6' }}>
+                  <div style={{ fontSize: '32px', fontWeight: '700', color: '#1e40af' }}>340%</div>
+                  <div style={{ fontSize: '13px', fontWeight: '500', color: '#1e3a8a' }}>ROI</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>Investment: $620K</div>
+                </div>
+                <div style={{ padding: '20px', background: 'linear-gradient(135deg, #fef3c7, #fffbeb)', borderRadius: '12px', textAlign: 'center', border: '2px solid #f59e0b' }}>
+                  <div style={{ fontSize: '32px', fontWeight: '700', color: '#b45309' }}>6 mo</div>
+                  <div style={{ fontSize: '13px', fontWeight: '500', color: '#92400e' }}>Payback Period</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>Break-even achieved</div>
+                </div>
+                <div style={{ padding: '20px', background: 'linear-gradient(135deg, #f5f3ff, #ede9fe)', borderRadius: '12px', textAlign: 'center', border: '2px solid #8b5cf6' }}>
+                  <div style={{ fontSize: '32px', fontWeight: '700', color: '#6d28d9' }}>87%</div>
+                  <div style={{ fontSize: '13px', fontWeight: '500', color: '#5b21b6' }}>Efficiency Gain</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>Manual review reduced</div>
+                </div>
+              </div>
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#f8fafc' }}><th>KPI</th><th>Before AI</th><th>After AI</th><th>Improvement</th><th>Business Impact</th></tr></thead>
+                <tbody>
+                  <tr><td style={{ fontWeight: '500' }}>Fraud Detection Rate</td><td>78%</td><td style={{ color: '#10b981', fontWeight: '600' }}>98.7%</td><td style={{ color: '#10b981' }}>+20.7%</td><td>$2.1M fraud blocked/month</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>False Positive Rate</td><td>15%</td><td style={{ color: '#10b981', fontWeight: '600' }}>2.1%</td><td style={{ color: '#10b981' }}>-12.9%</td><td>34% fewer support tickets</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Review Time (per case)</td><td>45 min</td><td style={{ color: '#10b981', fontWeight: '600' }}>5 min</td><td style={{ color: '#10b981' }}>-89%</td><td>8 FTE capacity freed</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Decision Latency</td><td>24-48 hrs</td><td style={{ color: '#10b981', fontWeight: '600' }}>23 ms</td><td style={{ color: '#10b981' }}>Real-time</td><td>Instant customer experience</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Customer Friction Score</td><td>High (7.2)</td><td style={{ color: '#10b981', fontWeight: '600' }}>Low (2.1)</td><td style={{ color: '#10b981' }}>-71%</td><td>+15 NPS points</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Annual Fraud Losses</td><td>$12M</td><td style={{ color: '#10b981', fontWeight: '600' }}>$4.2M</td><td style={{ color: '#10b981' }}>-65%</td><td>$7.8M savings</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+            {[
+              { id: 'simulation', label: 'Simulation', icon: '🔬', desc: 'Real-time model simulation with live predictions', color: '#dc2626' },
+              { id: 'demo', label: 'Demo', icon: '🎬', desc: 'Interactive demo scenarios and presentations', color: '#3b82f6' },
+              { id: 'demo-mode', label: 'Demo Mode', icon: '🎯', desc: 'Full presentation mode with live feed', color: '#f59e0b' },
+              { id: 'operations', label: 'Operations', icon: '⚙️', desc: 'Operational monitoring and actions', color: '#10b981' },
+              { id: '5w1h', label: '5W1H', icon: '❓', desc: 'What, Why, Who, When, Where, How analysis', color: '#8b5cf6' },
+              { id: 'day-simulation', label: 'Day Simulation', icon: '📅', desc: 'Day-in-life operational simulation', color: '#ec4899' },
+              { id: 'scenarios', label: 'Scenarios', icon: '🎭', desc: 'Test scenarios and edge cases', color: '#6366f1' },
+              { id: 'bot-ui', label: 'BOT UI', icon: '🤖', desc: 'AI report output: table, passage, list, graph', color: '#1e1b4b' },
+              { id: 'operation-flow', label: 'Operation Flow', icon: '🔄', desc: 'End-to-end operational workflow', color: '#059669' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: '20px', borderRadius: '12px', border: 'none', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', cursor: 'pointer', textAlign: 'left', transition: 'transform 0.2s', borderLeft: `4px solid ${tab.color}` }}>
+                <div style={{ fontSize: '24px', marginBottom: '8px' }}>{tab.icon}</div>
+                <div style={{ fontWeight: '600', fontSize: '14px', marginBottom: '4px' }}>{tab.label}</div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>{tab.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== ARCHITECTURE HUB ==================== */}
+      {activeTab === 'architecture-hub' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #1e40af 50%, #1e3a8a 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '32px' }}>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>🏗️ Architecture & Documentation Hub</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Technical architecture, documentation, analysis, and strategic resources - Click any card to view full content</p>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px' }}>
+            {[
+              { id: 'brd', label: 'BRD', icon: '📄', desc: 'Business Requirements Document', color: '#be185d' },
+              { id: 'hld', label: 'HLD', icon: '🏛️', desc: 'High-Level Design', color: '#1e40af' },
+              { id: 'lld', label: 'LLD', icon: '📐', desc: 'Low-Level Design', color: '#ef4444' },
+              { id: 'c4-model', label: 'C4 Model', icon: '📊', desc: 'Context, Container, Component, Code', color: '#8b5cf6' },
+              { id: 'adr', label: 'ADR', icon: '📝', desc: 'Architecture Decision Records', color: '#059669' },
+              { id: 'system-arch', label: 'System Arch', icon: '🖥️', desc: 'System architecture diagrams', color: '#0891b2' },
+              { id: 'architecture', label: 'Architecture', icon: '🏗️', desc: 'Software architecture', color: '#3b82f6' },
+              { id: 'runbook', label: 'Runbook', icon: '📋', desc: 'Operational procedures', color: '#dc2626' },
+              { id: 'roadmap', label: 'Roadmap', icon: '🗺️', desc: 'Product roadmap', color: '#10b981' },
+              { id: 'ml-workbench', label: 'ML Workbench', icon: '🧪', desc: 'Experiments & models', color: '#7c3aed' },
+              { id: 'stakeholders', label: 'Stakeholders', icon: '👥', desc: 'Team & contacts', color: '#f97316' },
+              { id: 'readme', label: 'README', icon: '📖', desc: 'Documentation', color: '#6366f1' },
+              { id: 'as-is-to-be', label: 'AS-IS/TO-BE', icon: '🔄', desc: 'Transformation', color: '#f59e0b' },
+              { id: 'api-docs', label: 'API Docs', icon: '🔌', desc: 'API documentation', color: '#1f2937' },
+              { id: 'executive-summary', label: 'Executive Summary', icon: '📈', desc: 'KPIs & metrics', color: '#be185d' },
+              { id: 'capacity-planning', label: 'Capacity', icon: '⚡', desc: 'Resource planning', color: '#4f46e5' },
+              { id: 'data-lineage', label: 'Data Lineage', icon: '🔗', desc: 'Data flow', color: '#ea580c' },
+              { id: 'feedback-loop', label: 'Feedback Loop', icon: '🔁', desc: 'Human feedback', color: '#06b6d4' },
+              { id: 'linkedin-post', label: 'LinkedIn Post', icon: '💼', desc: 'Social content', color: '#0077b5' },
+              { id: 'ai-strategy', label: 'AI Strategy', icon: '🎯', desc: 'Strategic plan', color: '#9333ea' },
+              { id: 'interview', label: 'Interview Guide', icon: '🎤', desc: 'Q&A prep', color: '#a855f7' },
+              { id: 'cost-analysis', label: 'Cost Analysis', icon: '💰', desc: 'ROI & costs', color: '#b91c1c' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: '16px', borderRadius: '12px', border: 'none', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', cursor: 'pointer', textAlign: 'left', borderLeft: `4px solid ${tab.color}` }}>
+                <div style={{ fontSize: '20px', marginBottom: '4px' }}>{tab.icon}</div>
+                <div style={{ fontWeight: '600', fontSize: '13px' }}>{tab.label}</div>
+                <div style={{ fontSize: '11px', color: '#6b7280' }}>{tab.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== TESTING HUB ==================== */}
+      {activeTab === 'testing-hub' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #0d9488 0%, #059669 50%, #047857 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '32px' }}>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>🧪 Testing & Quality Hub</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Comprehensive testing suite - Click any card to view full details</p>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                {[{ label: 'Total Tests', value: '1,247' }, { label: 'Pass Rate', value: '98.2%' }, { label: 'Coverage', value: '94%' }, { label: 'Automation', value: '87%' }].map((m, i) => (
+                  <div key={i} style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '24px', fontWeight: '700' }}>{m.value}</div><div style={{ fontSize: '12px', opacity: 0.9 }}>{m.label}</div></div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+            {[
+              { id: 'testing', label: 'Model Testing', icon: '🧪', desc: 'Unit, integration & E2E tests', color: '#059669' },
+              { id: 'ab-testing', label: 'A/B Testing', icon: '📊', desc: 'Experiment management', color: '#3b82f6' },
+              { id: 'workflow', label: 'Workflow', icon: '⚙️', desc: 'CI/CD validation', color: '#8b5cf6' },
+              { id: 'functional-testing', label: 'Functional', icon: '✅', desc: 'Functional test cases', color: '#10b981' },
+              { id: 'positive-testing', label: 'Positive', icon: '👍', desc: 'Valid input testing', color: '#22c55e' },
+              { id: 'negative-testing', label: 'Negative', icon: '👎', desc: 'Invalid input testing', color: '#ef4444' },
+              { id: 'performance-testing', label: 'Performance', icon: '⚡', desc: 'Speed & resource tests', color: '#f59e0b' },
+              { id: 'load-testing', label: 'Load Testing', icon: '📈', desc: 'Stress & capacity tests', color: '#dc2626' },
+              { id: 'api-testing', label: 'API Testing', icon: '🔌', desc: 'Endpoint validation', color: '#1e40af' },
+              { id: 'manual-testing', label: 'Manual', icon: '👁️', desc: 'Manual test cases', color: '#6366f1' },
+              { id: 'automated-testing', label: 'Automated', icon: '🤖', desc: 'Automation suites', color: '#7c3aed' },
+              { id: 'regression-testing', label: 'Regression', icon: '🔄', desc: 'Regression suites', color: '#0891b2' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: '16px', borderRadius: '12px', border: 'none', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', cursor: 'pointer', textAlign: 'left', borderLeft: `4px solid ${tab.color}` }}>
+                <div style={{ fontSize: '20px', marginBottom: '4px' }}>{tab.icon}</div>
+                <div style={{ fontWeight: '600', fontSize: '13px' }}>{tab.label}</div>
+                <div style={{ fontSize: '11px', color: '#6b7280' }}>{tab.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== AI HUB ==================== */}
+      {activeTab === 'ai-hub' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 50%, #4f46e5 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '32px' }}>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>🤖 Responsible AI Hub</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Trust, explainability, ethics, security, governance, and fairness - Click any card to view full details</p>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                {[{ label: 'Compliance', value: '98%' }, { label: 'Fairness', value: '0.98' }, { label: 'Explainability', value: '100%' }, { label: 'Security', value: 'A+' }].map((m, i) => (
+                  <div key={i} style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '24px', fontWeight: '700' }}>{m.value}</div><div style={{ fontSize: '12px', opacity: 0.9 }}>{m.label}</div></div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px' }}>
+            {[
+              { id: 'trust-ai', label: 'Trust AI', icon: '🤝', desc: 'Reliability & transparency', color: '#10b981' },
+              { id: 'explainable-ai', label: 'Explainable AI', icon: '🔍', desc: 'Model interpretability', color: '#8b5cf6' },
+              { id: 'ethical-ai', label: 'Ethical AI', icon: '⚖️', desc: 'Fairness metrics', color: '#ec4899' },
+              { id: 'robust-ai', label: 'Robust AI', icon: '🛡️', desc: 'Adversarial testing', color: '#ef4444' },
+              { id: 'secure-ai', label: 'Secure AI', icon: '🔒', desc: 'Security controls', color: '#1f2937' },
+              { id: 'portable-ai', label: 'Portable AI', icon: '📦', desc: 'Model portability', color: '#3b82f6' },
+              { id: 'compliance-ai', label: 'Compliance AI', icon: '✅', desc: 'Regulatory compliance', color: '#059669' },
+              { id: 'explainability', label: 'Explainability Hub', icon: '🎯', desc: 'SHAP, LIME, attention', color: '#7c3aed' },
+              { id: 'governance', label: 'Governance', icon: '📋', desc: 'AI governance', color: '#f59e0b' },
+              { id: 'bias-fairness', label: 'Bias & Fairness', icon: '⚖️', desc: 'Fairness analysis', color: '#db2777' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: '16px', borderRadius: '12px', border: 'none', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', cursor: 'pointer', textAlign: 'left', borderLeft: `4px solid ${tab.color}` }}>
+                <div style={{ fontSize: '20px', marginBottom: '4px' }}>{tab.icon}</div>
+                <div style={{ fontWeight: '600', fontSize: '13px' }}>{tab.label}</div>
+                <div style={{ fontSize: '11px', color: '#6b7280' }}>{tab.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== MONITOR HUB ==================== */}
+      {activeTab === 'monitor-hub' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #059669 0%, #0d9488 50%, #0891b2 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '32px' }}>
+              <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '12px', color: 'white' }}>📊 Monitoring & Operations Hub</h2>
+              <p style={{ opacity: 0.9, marginBottom: '20px' }}>Jobs, drift monitoring, incidents, SLA, versions, and pipelines - Click any card to view full details</p>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                {[{ label: 'Uptime', value: '99.95%' }, { label: 'Drift', value: '0.02%' }, { label: 'Version', value: 'v2.3.1' }, { label: 'Jobs', value: '24 Active' }].map((m, i) => (
+                  <div key={i} style={{ background: 'rgba(255,255,255,0.2)', padding: '12px 20px', borderRadius: '12px', textAlign: 'center' }}><div style={{ fontSize: '24px', fontWeight: '700' }}>{m.value}</div><div style={{ fontSize: '12px', opacity: 0.9 }}>{m.label}</div></div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+            {[
+              { id: 'jobs', label: 'Jobs', icon: '⚙️', desc: 'Active jobs & schedules', color: '#3b82f6' },
+              { id: 'drift-monitor', label: 'Drift Monitor', icon: '📊', desc: 'Data & model drift', color: '#f59e0b' },
+              { id: 'incidents', label: 'Incidents', icon: '🚨', desc: 'Incident management', color: '#ef4444' },
+              { id: 'sla-dashboard', label: 'SLA Dashboard', icon: '📈', desc: 'SLA metrics & budgets', color: '#10b981' },
+              { id: 'version-history', label: 'Version History', icon: '📜', desc: 'Model versions', color: '#6366f1' },
+              { id: 'auto-pipeline', label: 'Auto Pipeline', icon: '🚀', desc: 'CI/CD automation', color: '#ec4899' },
+              { id: 'rag-pipeline', label: 'RAG Pipeline', icon: '🔗', desc: 'Chunking, embedding, vector DB', color: '#8b5cf6' },
+              { id: 'feedback-loop', label: 'Feedback Loop', icon: '🔁', desc: 'Human feedback & labels', color: '#0891b2' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: '16px', borderRadius: '12px', border: 'none', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', cursor: 'pointer', textAlign: 'left', borderLeft: `4px solid ${tab.color}` }}>
+                <div style={{ fontSize: '20px', marginBottom: '4px' }}>{tab.icon}</div>
+                <div style={{ fontWeight: '600', fontSize: '13px' }}>{tab.label}</div>
+                <div style={{ fontSize: '11px', color: '#6b7280' }}>{tab.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== NEW TESTING TABS ==================== */}
+      {activeTab === 'functional-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>✅ Functional Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Verify all model features work as specified</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('func-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('func-run', 'Run', 'Running functional tests', 4000)} disabled={isButtonLoading('func-run')}>{getButtonText('func-run', '▶️ Run Tests', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back to Hub</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>Functional Test Results</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                {[{ label: 'Total Tests', value: '156', status: 'info' }, { label: 'Passed', value: '152', status: 'pass' }, { label: 'Failed', value: '3', status: 'fail' }, { label: 'Skipped', value: '1', status: 'warn' }].map((t, i) => (
+                  <div key={i} style={{ background: t.status === 'pass' ? '#f0fdf4' : t.status === 'fail' ? '#fef2f2' : t.status === 'warn' ? '#fffbeb' : '#eff6ff', padding: '20px', borderRadius: '8px', textAlign: 'center', borderTop: `4px solid ${t.status === 'pass' ? '#10b981' : t.status === 'fail' ? '#ef4444' : t.status === 'warn' ? '#f59e0b' : '#3b82f6'}` }}>
+                    <div style={{ fontSize: '28px', fontWeight: '700', color: t.status === 'pass' ? '#10b981' : t.status === 'fail' ? '#ef4444' : t.status === 'warn' ? '#f59e0b' : '#3b82f6' }}>{t.value}</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280' }}>{t.label}</div>
+                  </div>
+                ))}
+              </div>
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Test Case</th><th>Description</th><th>Input</th><th>Expected</th><th>Actual</th><th>Status</th></tr></thead><tbody>
+                <tr><td><code>TC-F001</code></td><td>Predict endpoint returns score</td><td>Valid transaction</td><td>Score 0-1</td><td>0.87</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>TC-F002</code></td><td>Batch endpoint processes 1000 records</td><td>1000 transactions</td><td>1000 scores</td><td>1000 scores</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>TC-F003</code></td><td>SHAP explanation generated</td><td>Transaction ID</td><td>Feature weights</td><td>Feature weights</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr style={{ background: '#fef2f2' }}><td><code>TC-F004</code></td><td>Edge case: $0 transaction</td><td>Amount = 0</td><td>Valid score</td><td>Error 500</td><td><span style={{ color: '#ef4444' }}>✗ Fail</span></td></tr>
+                <tr><td><code>TC-F005</code></td><td>Feature store lookup</td><td>Customer ID</td><td>Feature vector</td><td>Feature vector</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'positive-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>👍 Positive Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Test valid inputs produce expected outputs</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('pos-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('pos-run', 'Run', 'Running positive tests', 3000)} disabled={isButtonLoading('pos-run')}>{getButtonText('pos-run', '▶️ Run Tests', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#dcfce7' }}><h3 className="card-title" style={{ color: '#166534' }}>Valid Input Test Cases</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Test ID</th><th>Scenario</th><th>Input Data</th><th>Expected Output</th><th>Result</th><th>Status</th></tr></thead><tbody>
+                <tr><td><code>POS-001</code></td><td>Normal transaction</td><td>$150, domestic, known merchant</td><td>Score &lt; 0.3</td><td>0.12</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>POS-002</code></td><td>High-value legitimate</td><td>$5000, authorized user, usual location</td><td>Score &lt; 0.4</td><td>0.28</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>POS-003</code></td><td>International travel</td><td>$200, travel flag active</td><td>Score &lt; 0.5</td><td>0.35</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>POS-004</code></td><td>Recurring payment</td><td>$50, same merchant monthly</td><td>Score &lt; 0.2</td><td>0.08</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>POS-005</code></td><td>First purchase new card</td><td>$100, verified address</td><td>Score &lt; 0.5</td><td>0.41</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+              </tbody></table>
+              <div style={{ marginTop: '20px', padding: '16px', background: '#f0fdf4', borderRadius: '8px' }}>
+                <div style={{ fontWeight: '600', color: '#166534', marginBottom: '8px' }}>Summary</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+                  <div><span style={{ fontWeight: '500' }}>Total:</span> 45 test cases</div>
+                  <div><span style={{ color: '#10b981', fontWeight: '500' }}>Passed:</span> 45 (100%)</div>
+                  <div><span style={{ fontWeight: '500' }}>Duration:</span> 2.3s</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'negative-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>👎 Negative Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Test invalid inputs are handled gracefully</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('neg-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('neg-run', 'Run', 'Running negative tests', 3000)} disabled={isButtonLoading('neg-run')}>{getButtonText('neg-run', '▶️ Run Tests', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef2f2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>Invalid Input Test Cases</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Test ID</th><th>Scenario</th><th>Invalid Input</th><th>Expected Error</th><th>Actual</th><th>Status</th></tr></thead><tbody>
+                <tr><td><code>NEG-001</code></td><td>Null transaction</td><td>null</td><td>400 Bad Request</td><td>400</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>NEG-002</code></td><td>Negative amount</td><td>-$100</td><td>422 Validation Error</td><td>422</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>NEG-003</code></td><td>Invalid customer ID</td><td>ABC123 (non-existent)</td><td>404 Not Found</td><td>404</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr style={{ background: '#fef2f2' }}><td><code>NEG-004</code></td><td>SQL injection attempt</td><td>{'1; DROP TABLE--'}</td><td>400 sanitized</td><td>500 Error</td><td><span style={{ color: '#ef4444' }}>✗ Fail</span></td></tr>
+                <tr><td><code>NEG-005</code></td><td>Missing required field</td><td>No amount field</td><td>400 Missing field</td><td>400</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><code>NEG-006</code></td><td>Overflow amount</td><td>$999999999999</td><td>422 Out of range</td><td>422</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+              </tbody></table>
+              <div style={{ marginTop: '20px', padding: '16px', background: '#fef2f2', borderRadius: '8px' }}>
+                <div style={{ fontWeight: '600', color: '#991b1b', marginBottom: '8px' }}>⚠️ Security Issue Found</div>
+                <p style={{ fontSize: '13px', color: '#7f1d1d' }}>NEG-004: SQL injection not properly sanitized. Ticket JIRA-1234 created for remediation.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'performance-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>⚡ Performance Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Measure latency, throughput, and resource usage</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('perf-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('perf-run', 'Run', 'Running performance tests', 5000)} disabled={isButtonLoading('perf-run')}>{getButtonText('perf-run', '▶️ Run Benchmark', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>Performance Metrics</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                {[{ label: 'P50 Latency', value: '18ms', target: '25ms', pass: true }, { label: 'P95 Latency', value: '142ms', target: '200ms', pass: true }, { label: 'P99 Latency', value: '380ms', target: '500ms', pass: true }, { label: 'Throughput', value: '12K TPS', target: '10K', pass: true }].map((m, i) => (
+                  <div key={i} style={{ background: m.pass ? '#f0fdf4' : '#fef2f2', padding: '20px', borderRadius: '8px', textAlign: 'center', borderTop: `4px solid ${m.pass ? '#10b981' : '#ef4444'}` }}>
+                    <div style={{ fontSize: '24px', fontWeight: '700', color: m.pass ? '#10b981' : '#ef4444' }}>{m.value}</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280' }}>{m.label}</div>
+                    <div style={{ fontSize: '11px', color: '#9ca3af' }}>Target: {m.target}</div>
+                  </div>
+                ))}
+              </div>
+              <h4 style={{ marginBottom: '12px' }}>Resource Utilization</h4>
+              {[{ name: 'CPU Usage', value: 68, limit: 80 }, { name: 'Memory', value: 72, limit: 85 }, { name: 'GPU Utilization', value: 85, limit: 95 }].map((r, i) => (
+                <div key={i} style={{ marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}><span style={{ fontWeight: '500' }}>{r.name}</span><span>{r.value}% / {r.limit}%</span></div>
+                  <div style={{ height: '10px', background: '#e5e7eb', borderRadius: '5px' }}><div style={{ width: `${r.value}%`, height: '100%', background: r.value > r.limit * 0.9 ? '#ef4444' : '#f59e0b', borderRadius: '5px' }} /></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'load-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>📈 Load & Stress Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Test system behavior under extreme load</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('load-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('load-run', 'Run', 'Running load test', 8000)} disabled={isButtonLoading('load-run')}>{getButtonText('load-run', '🔥 Start Load Test', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#fee2e2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>Load Test Results</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Test Scenario</th><th>Concurrent Users</th><th>Requests/sec</th><th>Avg Latency</th><th>Error Rate</th><th>Status</th></tr></thead><tbody>
+                <tr><td>Normal Load</td><td>100</td><td>5,000</td><td>23ms</td><td>0.01%</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td>Peak Load</td><td>500</td><td>12,000</td><td>85ms</td><td>0.05%</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td>Stress Test</td><td>1,000</td><td>18,000</td><td>250ms</td><td>0.2%</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr style={{ background: '#fef3c7' }}><td>Breaking Point</td><td>2,000</td><td>22,000</td><td>1.2s</td><td>5.8%</td><td><span style={{ color: '#f59e0b' }}>⚠️ Degraded</span></td></tr>
+                <tr style={{ background: '#fef2f2' }}><td>Overload</td><td>5,000</td><td>15,000</td><td>Timeout</td><td>35%</td><td><span style={{ color: '#ef4444' }}>✗ Fail</span></td></tr>
+              </tbody></table>
+              <div style={{ marginTop: '20px', padding: '16px', background: '#eff6ff', borderRadius: '8px' }}>
+                <div style={{ fontWeight: '600', color: '#1e40af', marginBottom: '8px' }}>📊 Analysis</div>
+                <ul style={{ fontSize: '13px', color: '#1e3a8a', paddingLeft: '20px', marginBottom: 0 }}>
+                  <li>System handles 12K TPS comfortably (peak expected: 8K)</li>
+                  <li>Breaking point at 2K concurrent users - consider auto-scaling trigger</li>
+                  <li>Recommendation: Set auto-scale threshold at 1,500 concurrent users</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'api-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>🔌 API Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Validate API endpoints, contracts, and responses</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('api-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('api-run', 'Run', 'Running API tests', 4000)} disabled={isButtonLoading('api-run')}>{getButtonText('api-run', '▶️ Run API Tests', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>API Endpoint Tests</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Method</th><th>Endpoint</th><th>Response Code</th><th>Schema Valid</th><th>Latency</th><th>Status</th></tr></thead><tbody>
+                <tr><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>POST</span></td><td><code>/api/v1/predict</code></td><td>200</td><td>✓</td><td>23ms</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><span style={{ background: '#10b981', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>POST</span></td><td><code>/api/v1/batch</code></td><td>200</td><td>✓</td><td>2.1s</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><span style={{ background: '#3b82f6', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>GET</span></td><td><code>/api/v1/explain/:id</code></td><td>200</td><td>✓</td><td>150ms</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><span style={{ background: '#3b82f6', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>GET</span></td><td><code>/api/v1/health</code></td><td>200</td><td>✓</td><td>5ms</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><span style={{ background: '#3b82f6', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>GET</span></td><td><code>/api/v1/metrics</code></td><td>200</td><td>✓</td><td>12ms</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td><span style={{ background: '#f59e0b', color: 'white', padding: '2px 8px', borderRadius: '4px' }}>PUT</span></td><td><code>/api/v1/feedback</code></td><td>201</td><td>✓</td><td>45ms</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+              </tbody></table>
+              <div style={{ marginTop: '20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div style={{ padding: '16px', background: '#f0fdf4', borderRadius: '8px' }}><div style={{ fontWeight: '600', color: '#166534', marginBottom: '8px' }}>Contract Tests: 12/12 ✓</div><div style={{ fontSize: '12px', color: '#6b7280' }}>All OpenAPI schema validations passed</div></div>
+                <div style={{ padding: '16px', background: '#f0fdf4', borderRadius: '8px' }}><div style={{ fontWeight: '600', color: '#166534', marginBottom: '8px' }}>Auth Tests: 8/8 ✓</div><div style={{ fontSize: '12px', color: '#6b7280' }}>JWT validation, API key auth working</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'manual-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>👁️ Manual Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Human-driven exploratory and acceptance testing</p>
+                </div>
+                <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#e0e7ff' }}><h3 className="card-title" style={{ color: '#3730a3' }}>Manual Test Checklist</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Test Case</th><th>Tester</th><th>Date</th><th>Environment</th><th>Result</th><th>Notes</th></tr></thead><tbody>
+                <tr><td>UAT-001: Dashboard usability</td><td>Sarah M.</td><td>Jan 25</td><td>Staging</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td><td>Intuitive navigation</td></tr>
+                <tr><td>UAT-002: Alert notifications</td><td>John D.</td><td>Jan 25</td><td>Staging</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td><td>Email received in 2s</td></tr>
+                <tr><td>UAT-003: Fraud analyst workflow</td><td>Alice C.</td><td>Jan 24</td><td>Staging</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td><td>End-to-end verified</td></tr>
+                <tr><td>UAT-004: Report generation</td><td>Bob W.</td><td>Jan 24</td><td>Staging</td><td><span style={{ color: '#f59e0b' }}>⚠️ Minor</span></td><td>PDF formatting issue</td></tr>
+              </tbody></table>
+              <div style={{ marginTop: '20px', padding: '16px', background: '#f5f3ff', borderRadius: '8px' }}>
+                <div style={{ fontWeight: '600', color: '#5b21b6', marginBottom: '12px' }}>Exploratory Testing Notes</div>
+                <ul style={{ fontSize: '13px', color: '#374151', paddingLeft: '20px', marginBottom: 0 }}>
+                  <li>Edge case: Very long merchant names truncate properly</li>
+                  <li>Mobile responsiveness: Good on iPhone 14, iPad Pro</li>
+                  <li>Accessibility: WCAG 2.1 AA compliant</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'automated-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>🤖 Automated Testing</h2>
+                  <p style={{ opacity: 0.9 }}>CI/CD integrated test automation suites</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('auto-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('auto-run', 'Run', 'Running automation suite', 6000)} disabled={isButtonLoading('auto-run')}>{getButtonText('auto-run', '▶️ Run Suite', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>Automation Pipeline</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '24px' }}>
+                {['Lint & Format', 'Unit Tests', 'Integration', 'E2E Tests', 'Security Scan', 'Deploy'].map((s, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><div style={{ padding: '10px 14px', background: '#10b981', color: 'white', borderRadius: '8px', fontWeight: '500', fontSize: '12px' }}>✓ {s}</div>{i < 5 && <span style={{ color: '#d1d5db' }}>→</span>}</div>
+                ))}
+              </div>
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Suite</th><th>Framework</th><th>Tests</th><th>Duration</th><th>Last Run</th><th>Status</th></tr></thead><tbody>
+                <tr><td>Unit Tests</td><td>pytest</td><td>247</td><td>45s</td><td>5m ago</td><td><span style={{ color: '#10b981' }}>✓ 247/247</span></td></tr>
+                <tr><td>Integration</td><td>pytest + docker</td><td>45</td><td>3m</td><td>10m ago</td><td><span style={{ color: '#10b981' }}>✓ 45/45</span></td></tr>
+                <tr><td>E2E</td><td>Selenium</td><td>28</td><td>8m</td><td>15m ago</td><td><span style={{ color: '#10b981' }}>✓ 28/28</span></td></tr>
+                <tr><td>Security</td><td>Bandit + Safety</td><td>12</td><td>2m</td><td>15m ago</td><td><span style={{ color: '#10b981' }}>✓ No issues</span></td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'regression-testing' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #0891b2 0%, #0e7490 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>🔄 Regression Testing</h2>
+                  <p style={{ opacity: 0.9 }}>Ensure changes don't break existing functionality</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('reg-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('reg-run', 'Run', 'Running regression suite', 7000)} disabled={isButtonLoading('reg-run')}>{getButtonText('reg-run', '▶️ Run Regression', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('testing-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#cffafe' }}><h3 className="card-title" style={{ color: '#155e75' }}>Regression Test Results - v2.3.1</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                {[{ label: 'Total Tests', value: '432' }, { label: 'Passed', value: '430' }, { label: 'Failed', value: '2' }, { label: 'New Failures', value: '0' }].map((t, i) => (
+                  <div key={i} style={{ background: '#f0fdfa', padding: '16px', borderRadius: '8px', textAlign: 'center', borderTop: '4px solid #0d9488' }}><div style={{ fontSize: '24px', fontWeight: '700', color: '#0d9488' }}>{t.value}</div><div style={{ fontSize: '12px', color: '#6b7280' }}>{t.label}</div></div>
+                ))}
+              </div>
+              <h4 style={{ marginBottom: '12px' }}>Comparison: v2.3.0 → v2.3.1</h4>
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Module</th><th>v2.3.0</th><th>v2.3.1</th><th>Change</th><th>Status</th></tr></thead><tbody>
+                <tr><td>Core Prediction</td><td>145/145</td><td>145/145</td><td>-</td><td><span style={{ color: '#10b981' }}>✓ Stable</span></td></tr>
+                <tr><td>Feature Engineering</td><td>89/89</td><td>89/89</td><td>-</td><td><span style={{ color: '#10b981' }}>✓ Stable</span></td></tr>
+                <tr><td>API Layer</td><td>78/78</td><td>78/78</td><td>-</td><td><span style={{ color: '#10b981' }}>✓ Stable</span></td></tr>
+                <tr><td>Monitoring</td><td>45/45</td><td>45/45</td><td>-</td><td><span style={{ color: '#10b981' }}>✓ Stable</span></td></tr>
+                <tr><td>New GNN Features</td><td>N/A</td><td>73/75</td><td>+75</td><td><span style={{ color: '#f59e0b' }}>⚠️ 2 Known</span></td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== RAG PIPELINE ==================== */}
+      {activeTab === 'rag-pipeline' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 50%, #4f46e5 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>🔗 RAG Pipeline</h2>
+                  <p style={{ opacity: 0.9 }}>Retrieval-Augmented Generation: Chunking, Embedding, Vector DB, Model Context Protocol</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('rag-sync', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('rag-sync', 'Sync', 'Syncing vector database', 5000)} disabled={isButtonLoading('rag-sync')}>{getButtonText('rag-sync', '🔄 Sync Vector DB', 'Syncing...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('monitor-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '20px', background: 'white', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', flexWrap: 'wrap' }}>
+            {['📄 Documents', '✂️ Chunking', '🔢 Tokenization', '🧮 Embedding', '🗃️ Vector DB', '💾 Cache DB', '🔍 Pre-Retrieval', '📊 Context Window', '🤖 LLM', '📤 Post-Retrieval', '✅ Evaluation'].map((s, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ padding: '8px 12px', background: '#8b5cf6', color: 'white', borderRadius: '8px', fontWeight: '500', fontSize: '11px', whiteSpace: 'nowrap' }}>{s}</div>
+                {i < 10 && <span style={{ color: '#d1d5db' }}>→</span>}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2" style={{ gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>✂️ Chunking Configuration</h3></div>
+              <div className="card-body">
+                <table className="table" style={{ fontSize: '12px' }}><tbody>
+                  <tr><td style={{ fontWeight: '500' }}>Strategy</td><td>Semantic Chunking (sentence-based)</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Chunk Size</td><td>512 tokens</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Overlap</td><td>50 tokens (10%)</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Total Chunks</td><td>45,230</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Avg Chunk Size</td><td>487 tokens</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#ede9fe' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>🧮 Embedding Model</h3></div>
+              <div className="card-body">
+                <table className="table" style={{ fontSize: '12px' }}><tbody>
+                  <tr><td style={{ fontWeight: '500' }}>Model</td><td>text-embedding-3-large</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Dimensions</td><td>3072</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Batch Size</td><td>100</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Latency</td><td>~50ms/batch</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Cost</td><td>$0.00013/1K tokens</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2" style={{ gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>🗃️ Vector Database</h3></div>
+              <div className="card-body">
+                <table className="table" style={{ fontSize: '12px' }}><tbody>
+                  <tr><td style={{ fontWeight: '500' }}>Database</td><td>Pinecone</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Index</td><td>fraud-docs-prod</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Vectors</td><td>45,230</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Metric</td><td>Cosine Similarity</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Query Latency</td><td>~25ms</td></tr>
+                </tbody></table>
+                <div style={{ marginTop: '12px' }}>
+                  <button className="btn btn-sm btn-primary" style={getButtonStyle('vec-refresh')} onClick={() => handleAction('vec-refresh', 'Refresh', 'Refreshing index', 4000)} disabled={isButtonLoading('vec-refresh')}>{getButtonText('vec-refresh', '🔄 Refresh Index', 'Refreshing...')}</button>
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>💾 Cache Database</h3></div>
+              <div className="card-body">
+                <table className="table" style={{ fontSize: '12px' }}><tbody>
+                  <tr><td style={{ fontWeight: '500' }}>Cache</td><td>Redis Cluster</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Strategy</td><td>Semantic Cache</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Hit Rate</td><td>67%</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>TTL</td><td>24 hours</td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>Entries</td><td>12,450</td></tr>
+                </tbody></table>
+                <div style={{ marginTop: '12px' }}>
+                  <button className="btn btn-sm btn-warning" style={getButtonStyle('cache-clear')} onClick={() => handleAction('cache-clear', 'Clear', 'Clearing cache', 2000)} disabled={isButtonLoading('cache-clear')}>{getButtonText('cache-clear', '🗑️ Clear Cache', 'Clearing...')}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>📊 Model Context Protocol (MCP)</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '20px' }}>
+                {[{ label: 'Context Window', value: '128K tokens' }, { label: 'Retrieval Top-K', value: '10 chunks' }, { label: 'Reranking', value: 'Cohere v3' }, { label: 'Context Usage', value: '~45%' }].map((m, i) => (
+                  <div key={i} style={{ background: '#f0fdf4', padding: '16px', borderRadius: '8px', textAlign: 'center' }}><div style={{ fontSize: '18px', fontWeight: '700', color: '#059669' }}>{m.value}</div><div style={{ fontSize: '11px', color: '#6b7280' }}>{m.label}</div></div>
+                ))}
+              </div>
+              <h4 style={{ fontSize: '14px', marginBottom: '12px' }}>Pre-Retrieval & Post-Retrieval Processing</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div style={{ padding: '16px', background: '#eff6ff', borderRadius: '8px' }}>
+                  <div style={{ fontWeight: '600', color: '#1e40af', marginBottom: '8px' }}>🔍 Pre-Retrieval</div>
+                  <ul style={{ fontSize: '12px', paddingLeft: '20px', marginBottom: 0 }}>
+                    <li>Query expansion (synonyms)</li>
+                    <li>HyDE (Hypothetical Doc Embedding)</li>
+                    <li>Multi-query generation</li>
+                  </ul>
+                </div>
+                <div style={{ padding: '16px', background: '#f0fdf4', borderRadius: '8px' }}>
+                  <div style={{ fontWeight: '600', color: '#059669', marginBottom: '8px' }}>📤 Post-Retrieval</div>
+                  <ul style={{ fontSize: '12px', paddingLeft: '20px', marginBottom: 0 }}>
+                    <li>Cross-encoder reranking</li>
+                    <li>Context compression</li>
+                    <li>Citation extraction</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef2f2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>✅ Output Evaluation</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Metric</th><th>Value</th><th>Threshold</th><th>Status</th></tr></thead><tbody>
+                <tr><td>Answer Relevance</td><td>0.92</td><td>{'> 0.85'}</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td>Context Precision</td><td>0.89</td><td>{'> 0.80'}</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td>Faithfulness</td><td>0.95</td><td>{'> 0.90'}</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td>Hallucination Rate</td><td>2.1%</td><td>{'< 5%'}</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+                <tr><td>Latency (P95)</td><td>1.8s</td><td>{'< 3s'}</td><td><span style={{ color: '#10b981' }}>✓ Pass</span></td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== DRIFT MONITOR ==================== */}
+      {activeTab === 'drift-monitor' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>📊 Drift Monitor</h2>
+                  <p style={{ opacity: 0.9 }}>Monitor data drift, concept drift, and model performance degradation</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('drift-check', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('drift-check', 'Check', 'Running drift analysis', 4000)} disabled={isButtonLoading('drift-check')}>{getButtonText('drift-check', '🔍 Run Drift Check', 'Checking...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('monitor-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+            {[{ l: 'Data Drift', v: '0.02%', s: 'ok', desc: 'PSI: 0.018' }, { l: 'Concept Drift', v: '0.8%', s: 'ok', desc: 'KS: 0.021' }, { l: 'Prediction Drift', v: '1.2%', s: 'ok', desc: 'Score shift' }, { l: 'Feature Drift', v: '2.1%', s: 'warn', desc: 'velocity_1h' }].map((d, i) => (
+              <div key={i} className="card" style={{ background: d.s === 'ok' ? '#f0fdf4' : '#fef3c7', borderTop: `4px solid ${d.s === 'ok' ? '#10b981' : '#f59e0b'}` }}>
+                <div className="card-body" style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '28px', fontWeight: '700', color: d.s === 'ok' ? '#10b981' : '#f59e0b' }}>{d.v}</div>
+                  <div style={{ fontSize: '14px', fontWeight: '500' }}>{d.l}</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>{d.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>Feature Drift Details</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Feature</th><th>PSI Score</th><th>KS Statistic</th><th>Drift Type</th><th>Severity</th><th>Action</th></tr></thead><tbody>
+                <tr><td><code>velocity_1h</code></td><td>0.15</td><td>0.08</td><td>Distribution shift</td><td><span style={{  color: '#f59e0b' , opacity: isButtonLoading('action-56') ? 0.7 : 1, cursor: isButtonLoading('action-56') ? 'not-allowed' : 'pointer' }}>Medium</span></td><td><button className="btn btn-sm btn-warning" onClick={() => handleAction('action-56', 'Action coming soon', 'Action coming soon', 1500)} disabled={isButtonLoading('action-56')}>{getButtonText('action-56', 'Investigate', 'Loading...')}</button></td></tr>
+                <tr><td><code>transaction_amount</code></td><td>0.02</td><td>0.01</td><td>-</td><td><span style={{ color: '#10b981' }}>Low</span></td><td>-</td></tr>
+                <tr><td><code>merchant_risk</code></td><td>0.03</td><td>0.02</td><td>-</td><td><span style={{ color: '#10b981' }}>Low</span></td><td>-</td></tr>
+                <tr><td><code>geo_distance</code></td><td>0.01</td><td>0.01</td><td>-</td><td><span style={{ color: '#10b981' }}>Low</span></td><td>-</td></tr>
+              </tbody></table>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header"><h3 className="card-title">Drift Trend (Last 30 Days)</h3></div>
+            <div className="card-body">
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={[
+                  { day: 'Jan 1', data: 0.01, concept: 0.5, pred: 0.8 },
+                  { day: 'Jan 7', data: 0.02, concept: 0.6, pred: 0.9 },
+                  { day: 'Jan 14', data: 0.02, concept: 0.7, pred: 1.0 },
+                  { day: 'Jan 21', data: 0.02, concept: 0.8, pred: 1.1 },
+                  { day: 'Jan 28', data: 0.02, concept: 0.8, pred: 1.2 }
+                ]}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" fontSize={11} />
+                  <YAxis fontSize={11} />
+                  <Tooltip />
+                  <Legend />
+                  <Line type="monotone" dataKey="data" stroke="#3b82f6" name="Data Drift %" />
+                  <Line type="monotone" dataKey="concept" stroke="#f59e0b" name="Concept Drift %" />
+                  <Line type="monotone" dataKey="pred" stroke="#10b981" name="Prediction Drift %" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== BIAS & FAIRNESS ==================== */}
+      {activeTab === 'bias-fairness' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #ec4899 0%, #db2777 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>⚖️ Bias & Fairness Analysis</h2>
+                  <p style={{ opacity: 0.9 }}>Comprehensive fairness metrics across demographic segments</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('bias-run', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('bias-run', 'Run', 'Running bias analysis', 4000)} disabled={isButtonLoading('bias-run')}>{getButtonText('bias-run', '🔍 Run Analysis', 'Running...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('ai-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+            {[{ m: 'Demographic Parity', v: 0.98, t: 0.95 }, { m: 'Equalized Odds', v: 0.96, t: 0.90 }, { m: 'Disparate Impact', v: 1.02, t: 0.80 }, { m: 'Calibration', v: 0.97, t: 0.95 }].map((item, i) => (
+              <div key={i} className="card" style={{ borderTop: '4px solid #ec4899' }}>
+                <div className="card-body" style={{ textAlign: 'center', padding: '20px' }}>
+                  <div style={{ fontSize: '28px', fontWeight: '700', color: '#ec4899' }}>{item.v}</div>
+                  <div style={{ fontSize: '13px', fontWeight: '500' }}>{item.m}</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>Threshold: {item.t}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="card">
+            <div className="card-header" style={{ background: '#fce7f3' }}><h3 className="card-title" style={{ color: '#9d174d' }}>Segment Analysis</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Segment</th><th>Population</th><th>Approval Rate</th><th>Precision</th><th>Recall</th><th>F1</th><th>Status</th></tr></thead><tbody>
+                <tr><td>Age 18-30</td><td>28%</td><td>72.3%</td><td>93.5%</td><td>91.2%</td><td>0.923</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+                <tr><td>Age 31-50</td><td>42%</td><td>74.1%</td><td>94.2%</td><td>92.8%</td><td>0.935</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+                <tr><td>Age 51+</td><td>30%</td><td>73.8%</td><td>93.8%</td><td>91.5%</td><td>0.926</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+                <tr><td>Urban</td><td>65%</td><td>73.5%</td><td>94.1%</td><td>92.3%</td><td>0.932</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+                <tr><td>Rural</td><td>35%</td><td>72.8%</td><td>93.2%</td><td>90.8%</td><td>0.920</td><td><span style={{ color: '#10b981' }}>✓ Fair</span></td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== BOT UI - REPORT OUTPUT ==================== */}
+      {activeTab === 'bot-ui' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #4c1d95 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>🤖 AI Bot Report Output</h2>
+                  <p style={{ opacity: 0.9 }}>Generated insights displayed as Table, Passage, List, and Graph formats with contextual explanations</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('bot-gen', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('bot-gen', 'Generate', 'Generating report', 4000)} disabled={isButtonLoading('bot-gen')}>{getButtonText('bot-gen', '🔄 Regenerate', 'Generating...')}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Pretext Context */}
+          <div className="card" style={{ background: '#f0fdf4', border: '2px solid #10b981' }}>
+            <div className="card-body" style={{ padding: '20px' }}>
+              <div style={{ fontSize: '14px', fontWeight: '600', color: '#065f46', marginBottom: '12px' }}>📋 Report Context - {useCase?.name || 'Fraud Detection Use Case'}</div>
+              <p style={{ fontSize: '13px', color: '#374151', marginBottom: '12px', lineHeight: '1.6' }}>
+                This AI-generated report provides comprehensive analysis of the <strong>{useCase?.name || 'Real-Time Fraud Detection'}</strong> use case.
+                The model processes <strong>12,000+ transactions per second</strong> with <strong>95.2% accuracy</strong>, generating <strong>$2.8M annual savings</strong>.
+                Below are the key findings presented in multiple formats for different stakeholder needs.
+              </p>
+              <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                <span style={{ padding: '4px 12px', background: '#dcfce7', borderRadius: '12px', fontSize: '12px', color: '#166534' }}>📊 Data Period: Last 30 Days</span>
+                <span style={{ padding: '4px 12px', background: '#dbeafe', borderRadius: '12px', fontSize: '12px', color: '#1e40af' }}>🎯 Confidence: 95%</span>
+                <span style={{ padding: '4px 12px', background: '#fef3c7', borderRadius: '12px', fontSize: '12px', color: '#92400e' }}>⏱️ Generated: Just now</span>
+              </div>
+            </div>
+          </div>
+
+          {/* TABLE FORMAT */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#eff6ff' }}>
+              <h3 className="card-title" style={{ color: '#1e40af' }}>📊 Table Format - Key Metrics Summary</h3>
+              <span style={{ fontSize: '11px', color: '#6b7280' }}>Best for: Data analysts, detailed comparison</span>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              <div style={{ padding: '16px', background: '#f8fafc', borderBottom: '1px solid #e5e7eb' }}>
+                <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}>
+                  <strong>📁 Data Source:</strong> Production model metrics aggregated from Prometheus + business KPIs from data warehouse.
+                  <strong style={{ marginLeft: '16px' }}>🎯 Purpose:</strong> Executive dashboard for quick performance assessment.
+                </p>
+              </div>
+              <table className="table" style={{ margin: 0 }}>
+                <thead><tr style={{ background: '#dbeafe' }}><th>Metric</th><th>Current</th><th>Target</th><th>Trend</th><th>Status</th><th>Business Impact</th></tr></thead>
+                <tbody>
+                  <tr><td style={{ fontWeight: '600' }}>Model Accuracy</td><td>95.2%</td><td>93%</td><td style={{ color: '#10b981' }}>↑ +2.3%</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontSize: '11px' }}>Exceeds</span></td><td>Fewer false alerts, better UX</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Fraud Detection Rate</td><td>98.7%</td><td>95%</td><td style={{ color: '#10b981' }}>↑ +1.2%</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontSize: '11px' }}>Exceeds</span></td><td>$2.1M fraud prevented/month</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>False Positive Rate</td><td>2.1%</td><td>5%</td><td style={{ color: '#10b981' }}>↓ -0.8%</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontSize: '11px' }}>Exceeds</span></td><td>Reduced customer friction</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Avg Latency (P95)</td><td>142ms</td><td>200ms</td><td style={{ color: '#10b981' }}>↓ -18ms</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontSize: '11px' }}>Exceeds</span></td><td>Better real-time response</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>System Uptime</td><td>99.95%</td><td>99.9%</td><td style={{ color: '#6b7280' }}>→ Stable</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontSize: '11px' }}>Meets</span></td><td>SLA compliance maintained</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Cost per Prediction</td><td>$0.0003</td><td>$0.0005</td><td style={{ color: '#10b981' }}>↓ -15%</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontSize: '11px' }}>Exceeds</span></td><td>40% cost reduction YoY</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* PASSAGE FORMAT */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#f0fdf4' }}>
+              <h3 className="card-title" style={{ color: '#166534' }}>📝 Passage Format - Executive Summary</h3>
+              <span style={{ fontSize: '11px', color: '#6b7280' }}>Best for: C-suite executives, board presentations</span>
+            </div>
+            <div className="card-body">
+              <div style={{ padding: '20px', background: '#f8fafc', borderRadius: '8px', borderLeft: '4px solid #10b981' }}>
+                <p style={{ fontSize: '14px', lineHeight: '1.8', color: '#374151', marginBottom: '16px' }}>
+                  <strong>Executive Summary:</strong> The {useCase?.name || 'Real-Time Fraud Detection'} system has demonstrated exceptional performance this quarter,
+                  achieving a <strong style={{ color: '#059669' }}>95.2% accuracy rate</strong> against a target of 93%. The model successfully identified
+                  <strong style={{ color: '#059669' }}> 98.7% of fraudulent transactions</strong>, preventing an estimated <strong style={{ color: '#059669' }}>$2.1M in fraud losses</strong> this month alone.
+                </p>
+                <p style={{ fontSize: '14px', lineHeight: '1.8', color: '#374151', marginBottom: '16px' }}>
+                  <strong>Key Achievement:</strong> False positive rates decreased to <strong style={{ color: '#059669' }}>2.1%</strong> (down from 2.9% last quarter),
+                  significantly reducing customer friction and support ticket volume by 34%. The P95 latency of <strong style={{ color: '#059669' }}>142ms</strong> enables
+                  real-time transaction decisioning without impacting customer experience.
+                </p>
+                <p style={{ fontSize: '14px', lineHeight: '1.8', color: '#374151', marginBottom: '0' }}>
+                  <strong>Recommendation:</strong> Based on current performance trajectory, we recommend expanding the model to cover
+                  <strong style={{ color: '#2563eb' }}> international transactions</strong> (currently 15% of volume) and implementing
+                  <strong style={{ color: '#2563eb' }}> GNN-based features</strong> for network fraud detection, projected to yield an additional
+                  <strong style={{ color: '#059669' }}> $800K annual savings</strong>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* LIST FORMAT */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}>
+              <h3 className="card-title" style={{ color: '#92400e' }}>📋 List Format - Key Findings & Action Items</h3>
+              <span style={{ fontSize: '11px', color: '#6b7280' }}>Best for: Project managers, sprint planning</span>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+                <div>
+                  <h4 style={{ color: '#166534', marginBottom: '12px' }}>✅ Achievements</h4>
+                  <ul style={{ fontSize: '13px', color: '#374151', paddingLeft: '20px', lineHeight: '2' }}>
+                    <li><strong>95.2% accuracy</strong> - Exceeded 93% target by 2.3 points</li>
+                    <li><strong>$2.8M annual savings</strong> - 40% above forecast</li>
+                    <li><strong>142ms P95 latency</strong> - 29% better than SLA</li>
+                    <li><strong>99.95% uptime</strong> - Zero unplanned outages</li>
+                    <li><strong>2.1% false positive rate</strong> - Best in class</li>
+                    <li><strong>12K TPS throughput</strong> - 20% headroom</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4 style={{ color: '#dc2626', marginBottom: '12px' }}>⚠️ Action Items</h4>
+                  <ul style={{ fontSize: '13px', color: '#374151', paddingLeft: '20px', lineHeight: '2' }}>
+                    <li><strong>Feature drift detected</strong> - velocity_1h feature needs investigation</li>
+                    <li><strong>Model retrain due</strong> - Scheduled for next Sunday</li>
+                    <li><strong>GNN integration</strong> - Q2 roadmap item, +2.8% projected lift</li>
+                    <li><strong>International expansion</strong> - Pending compliance review</li>
+                    <li><strong>Edge case: $0 transactions</strong> - Bug fix in progress (JIRA-1234)</li>
+                    <li><strong>Documentation update</strong> - API v2 docs need refresh</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* GRAPH FORMAT */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#ede9fe' }}>
+              <h3 className="card-title" style={{ color: '#5b21b6' }}>📈 Graph Format - Visual Analytics</h3>
+              <span style={{ fontSize: '11px', color: '#6b7280' }}>Best for: Technical teams, trend analysis</span>
+            </div>
+            <div className="card-body">
+              <div style={{ padding: '16px', background: '#f8fafc', borderRadius: '8px', marginBottom: '20px' }}>
+                <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}>
+                  <strong>📁 Data Source:</strong> Real-time metrics from Prometheus, aggregated hourly for visualization.
+                  <strong style={{ marginLeft: '16px' }}>📊 Chart Type:</strong> Multi-line time series showing model performance trends.
+                </p>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+                <div>
+                  <h4 style={{ fontSize: '14px', marginBottom: '12px', color: '#374151' }}>Performance Trend (30 Days)</h4>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <LineChart data={[
+                      { day: 'W1', accuracy: 94.2, precision: 95.1, recall: 93.8 },
+                      { day: 'W2', accuracy: 94.5, precision: 95.3, recall: 94.1 },
+                      { day: 'W3', accuracy: 94.8, precision: 95.5, recall: 94.5 },
+                      { day: 'W4', accuracy: 95.2, precision: 95.8, recall: 94.9 }
+                    ]}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="day" fontSize={11} />
+                      <YAxis domain={[92, 98]} fontSize={11} />
+                      <Tooltip />
+                      <Legend />
+                      <Line type="monotone" dataKey="accuracy" stroke="#3b82f6" strokeWidth={2} name="Accuracy %" />
+                      <Line type="monotone" dataKey="precision" stroke="#10b981" strokeWidth={2} name="Precision %" />
+                      <Line type="monotone" dataKey="recall" stroke="#f59e0b" strokeWidth={2} name="Recall %" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <h4 style={{ fontSize: '14px', marginBottom: '12px', color: '#374151' }}>Fraud Detection Volume</h4>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={[
+                      { day: 'Mon', detected: 1250, blocked: 1180 },
+                      { day: 'Tue', detected: 1340, blocked: 1290 },
+                      { day: 'Wed', detected: 1180, blocked: 1120 },
+                      { day: 'Thu', detected: 1420, blocked: 1380 },
+                      { day: 'Fri', detected: 1580, blocked: 1520 }
+                    ]}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="day" fontSize={11} />
+                      <YAxis fontSize={11} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="detected" fill="#ef4444" name="Fraud Detected" />
+                      <Bar dataKey="blocked" fill="#10b981" name="Successfully Blocked" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div style={{ marginTop: '20px', padding: '16px', background: '#f0fdf4', borderRadius: '8px' }}>
+                <h4 style={{ fontSize: '13px', fontWeight: '600', color: '#166534', marginBottom: '8px' }}>💡 KEY INSIGHTS FROM GRAPHS</h4>
+                <ul style={{ fontSize: '12px', color: '#374151', paddingLeft: '20px', marginBottom: 0 }}>
+                  <li><strong>Upward trend:</strong> All metrics improving week-over-week</li>
+                  <li><strong>Friday spike:</strong> Higher fraud attempts on Fridays (payday effect)</li>
+                  <li><strong>Block rate:</strong> 96.2% of detected fraud successfully blocked</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== OPERATION FLOW ==================== */}
+      {activeTab === 'operation-flow' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #059669 0%, #0d9488 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>⚙️ Operation Flow & Monitoring</h2>
+              <p style={{ opacity: 0.9 }}>End-to-end operational workflow with real-time monitoring points</p>
+            </div>
+          </div>
+
+          {/* Main Operation Flow */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>🔄 End-to-End Operation Flow</h3></div>
+            <div className="card-body">
+              <div style={{ padding: '16px', background: '#f8fafc', borderRadius: '8px', marginBottom: '20px' }}>
+                <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}>
+                  <strong>📁 Process:</strong> Real-time fraud detection pipeline from transaction ingestion to decision output.
+                  <strong style={{ marginLeft: '16px' }}>⏱️ End-to-end latency:</strong> 23ms average, 142ms P95.
+                </p>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '20px', background: 'linear-gradient(90deg, #f0fdf4 0%, #ecfdf5 50%, #f0fdf4 100%)', borderRadius: '12px' }}>
+                {[
+                  { step: '1. Ingest', icon: '📥', desc: 'Transaction received', time: '1ms', monitor: 'Kafka lag' },
+                  { step: '2. Validate', icon: '✅', desc: 'Schema validation', time: '2ms', monitor: 'Error rate' },
+                  { step: '3. Enrich', icon: '🔗', desc: 'Feature lookup', time: '5ms', monitor: 'Cache hit' },
+                  { step: '4. Score', icon: '🤖', desc: 'ML inference', time: '8ms', monitor: 'Latency P95' },
+                  { step: '5. Decide', icon: '⚖️', desc: 'Threshold check', time: '1ms', monitor: 'Decision dist' },
+                  { step: '6. Act', icon: '🚨', desc: 'Block/Allow', time: '3ms', monitor: 'Block rate' },
+                  { step: '7. Log', icon: '📝', desc: 'Audit trail', time: '3ms', monitor: 'Log volume' }
+                ].map((s, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ padding: '12px 16px', background: '#10b981', color: 'white', borderRadius: '8px', minWidth: '120px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '18px', marginBottom: '4px' }}>{s.icon}</div>
+                      <div style={{ fontWeight: '600', fontSize: '12px' }}>{s.step}</div>
+                      <div style={{ fontSize: '10px', opacity: 0.9 }}>{s.desc}</div>
+                      <div style={{ fontSize: '10px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', padding: '2px 4px', marginTop: '4px' }}>{s.time}</div>
+                    </div>
+                    {i < 6 && <span style={{ fontSize: '20px', color: '#10b981' }}>→</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Monitoring Dashboard */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>📊 Real-Time Monitoring Dashboard</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                {[
+                  { metric: 'Throughput', value: '12,450', unit: 'TPS', status: 'healthy', trend: '↑ 5%' },
+                  { metric: 'Latency P95', value: '142', unit: 'ms', status: 'healthy', trend: '↓ 8ms' },
+                  { metric: 'Error Rate', value: '0.02', unit: '%', status: 'healthy', trend: '↓ 0.01%' },
+                  { metric: 'Queue Depth', value: '234', unit: 'msgs', status: 'healthy', trend: '→ stable' }
+                ].map((m, i) => (
+                  <div key={i} style={{ padding: '20px', background: '#f0fdf4', borderRadius: '12px', textAlign: 'center', borderTop: '4px solid #10b981' }}>
+                    <div style={{ fontSize: '28px', fontWeight: '700', color: '#059669' }}>{m.value}<span style={{ fontSize: '14px', color: '#6b7280' }}>{m.unit}</span></div>
+                    <div style={{ fontSize: '13px', fontWeight: '500', marginBottom: '4px' }}>{m.metric}</div>
+                    <div style={{ fontSize: '11px', color: '#10b981' }}>{m.trend}</div>
+                  </div>
+                ))}
+              </div>
+              <h4 style={{ marginBottom: '12px' }}>Service Health Status</h4>
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Service</th><th>Status</th><th>Instances</th><th>CPU</th><th>Memory</th><th>Uptime</th><th>Alerts</th></tr></thead><tbody>
+                <tr><td style={{ fontWeight: '500' }}>API Gateway</td><td><span style={{ color: '#10b981' }}>● Healthy</span></td><td>4/4</td><td>45%</td><td>62%</td><td>15d 4h</td><td>0</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>Feature Service</td><td><span style={{ color: '#10b981' }}>● Healthy</span></td><td>6/6</td><td>58%</td><td>71%</td><td>15d 4h</td><td>0</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>ML Inference</td><td><span style={{ color: '#10b981' }}>● Healthy</span></td><td>8/8</td><td>72%</td><td>68%</td><td>7d 12h</td><td>0</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>Redis Cache</td><td><span style={{ color: '#10b981' }}>● Healthy</span></td><td>3/3</td><td>25%</td><td>82%</td><td>30d 2h</td><td>0</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>Kafka Cluster</td><td><span style={{ color: '#f59e0b' }}>● Warning</span></td><td>5/5</td><td>68%</td><td>75%</td><td>30d 2h</td><td>1</td></tr>
+              </tbody></table>
+            </div>
+          </div>
+
+          {/* Runbook Quick Actions */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef2f2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>🚨 Incident Response & Runbook Actions</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '20px' }}>
+                <button className="btn btn-danger" style={getButtonStyle('op-restart')} onClick={() => handleAction('op-restart', 'Restart', 'Restarting services', 5000)} disabled={isButtonLoading('op-restart')}>{getButtonText('op-restart', '🔄 Restart Services', 'Restarting...')}</button>
+                <button className="btn btn-warning" style={getButtonStyle('op-cache')} onClick={() => handleAction('op-cache', 'Clear', 'Clearing cache', 3000)} disabled={isButtonLoading('op-cache')}>{getButtonText('op-cache', '🗑️ Clear Cache', 'Clearing...')}</button>
+                <button className="btn btn-primary" style={getButtonStyle('op-scale')} onClick={() => handleAction('op-scale', 'Scale', 'Scaling up', 4000)} disabled={isButtonLoading('op-scale')}>{getButtonText('op-scale', '📈 Scale Up', 'Scaling...')}</button>
+                <button className="btn btn-secondary" style={getButtonStyle('op-health')} onClick={() => handleAction('op-health', 'Check', 'Health check', 2000)} disabled={isButtonLoading('op-health')}>{getButtonText('op-health', '🏥 Health Check', 'Checking...')}</button>
+              </div>
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Issue</th><th>Severity</th><th>Detection</th><th>Resolution Steps</th><th>Escalation</th></tr></thead><tbody>
+                <tr><td>High Latency ({'>'} 500ms)</td><td><span style={{ color: '#f59e0b' }}>Medium</span></td><td>P95 {'>'} threshold</td><td>Check Redis → Scale inference → Review features</td><td>L2 after 15min</td></tr>
+                <tr><td>Error Rate Spike ({'>'} 1%)</td><td><span style={{ color: '#ef4444' }}>High</span></td><td>Error rate alert</td><td>Check logs → Rollback if needed → Investigate</td><td>L2 immediately</td></tr>
+                <tr><td>Model Drift Detected</td><td><span style={{ color: '#f59e0b' }}>Medium</span></td><td>PSI {'>'} 0.1</td><td>Review features → Schedule retrain → Monitor</td><td>L2 after 1hr</td></tr>
+                <tr><td>Service Down</td><td><span style={{ color: '#ef4444' }}>Critical</span></td><td>Health check fail</td><td>Failover → Check pods → Review logs → Restart</td><td>L1 immediately</td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== BRD - BUSINESS REQUIREMENTS DOCUMENT ==================== */}
+      {activeTab === 'brd' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #be185d 0%, #db2777 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>📄 Business Requirements Document (BRD)</h2>
+                  <p style={{ opacity: 0.9 }}>Comprehensive business requirements, objectives, and success criteria</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn" style={getButtonStyle('brd-export', { background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' })} onClick={() => handleAction('brd-export', 'Export', 'Exporting BRD', 3000)} disabled={isButtonLoading('brd-export')}>{getButtonText('brd-export', '📥 Export PDF', 'Exporting...')}</button>
+                  <button className="btn" style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none' }} onClick={() => setActiveTab('architecture-hub')}>← Back</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Document Info */}
+          <div className="card" style={{ border: '2px solid #be185d' }}>
+            <div className="card-header" style={{ background: '#fdf2f8' }}>
+              <h3 className="card-title" style={{ color: '#9d174d' }}>📋 Document Information</h3>
+            </div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { label: 'Project Name', value: 'Real-Time Fraud Detection System' },
+                  { label: 'Document Version', value: 'v2.1' },
+                  { label: 'Last Updated', value: 'Jan 15, 2025' },
+                  { label: 'Status', value: 'Approved', isStatus: true }
+                ].map((item, i) => (
+                  <div key={i} style={{ padding: '16px', background: '#fdf2f8', borderRadius: '8px' }}>
+                    <div style={{ fontSize: '12px', color: '#9d174d', fontWeight: '600', marginBottom: '4px' }}>{item.label}</div>
+                    {item.isStatus ? (
+                      <span style={{ background: '#dcfce7', color: '#166534', padding: '4px 12px', borderRadius: '12px', fontSize: '13px', fontWeight: '600' }}>{item.value}</span>
+                    ) : (
+                      <div style={{ fontSize: '14px', fontWeight: '500', color: '#374151' }}>{item.value}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: '16px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+                <div style={{ padding: '12px', background: '#f8fafc', borderRadius: '8px' }}>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>Business Owner</div>
+                  <div style={{ fontWeight: '500' }}>Sarah Johnson, VP Risk Management</div>
+                </div>
+                <div style={{ padding: '12px', background: '#f8fafc', borderRadius: '8px' }}>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>Technical Lead</div>
+                  <div style={{ fontWeight: '500' }}>Michael Chen, Principal Engineer</div>
+                </div>
+                <div style={{ padding: '12px', background: '#f8fafc', borderRadius: '8px' }}>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>Product Manager</div>
+                  <div style={{ fontWeight: '500' }}>Emily Davis, Senior PM</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Executive Summary */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>📝 1. Executive Summary</h3></div>
+            <div className="card-body">
+              <div style={{ padding: '20px', background: '#f8fafc', borderRadius: '8px', borderLeft: '4px solid #3b82f6' }}>
+                <p style={{ fontSize: '14px', lineHeight: '1.8', color: '#374151', marginBottom: '16px' }}>
+                  This document outlines the business requirements for implementing a <strong>Real-Time Fraud Detection System</strong> using
+                  Machine Learning. The system will analyze transaction data in real-time to identify and prevent fraudulent activities,
+                  reducing financial losses and improving customer experience.
+                </p>
+                <p style={{ fontSize: '14px', lineHeight: '1.8', color: '#374151', marginBottom: '0' }}>
+                  <strong>Expected Outcomes:</strong> Reduce fraud losses by 65% ($7.8M annually), decrease false positive rate from 15% to 2%,
+                  and enable real-time transaction decisioning within 100ms SLA.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Business Objectives */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#dcfce7' }}><h3 className="card-title" style={{ color: '#166534' }}>🎯 2. Business Objectives</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead><tr style={{ background: '#f0fdf4' }}><th>ID</th><th>Objective</th><th>Success Metric</th><th>Target</th><th>Priority</th></tr></thead>
+                <tbody>
+                  <tr><td style={{ fontWeight: '600' }}>BO-01</td><td>Reduce fraud losses through early detection</td><td>Annual fraud loss reduction</td><td>$7.8M (65%)</td><td><span style={{ background: '#fef2f2', color: '#991b1b', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>Critical</span></td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>BO-02</td><td>Minimize customer friction from false positives</td><td>False Positive Rate</td><td>{'< 3%'}</td><td><span style={{ background: '#fef2f2', color: '#991b1b', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>Critical</span></td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>BO-03</td><td>Enable real-time transaction decisioning</td><td>P95 Latency</td><td>{'< 100ms'}</td><td><span style={{ background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>High</span></td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>BO-04</td><td>Improve fraud analyst productivity</td><td>Cases per analyst per day</td><td>+150%</td><td><span style={{ background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>High</span></td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>BO-05</td><td>Ensure regulatory compliance</td><td>Audit findings</td><td>Zero critical</td><td><span style={{ background: '#fef2f2', color: '#991b1b', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>Critical</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Functional Requirements */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>⚙️ 3. Functional Requirements</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                <div>
+                  <h4 style={{ color: '#1e40af', marginBottom: '12px' }}>FR-1: Real-Time Scoring</h4>
+                  <ul style={{ fontSize: '13px', paddingLeft: '20px', lineHeight: '1.8' }}>
+                    <li>System shall score transactions within 100ms</li>
+                    <li>System shall process 15,000+ transactions per second</li>
+                    <li>System shall provide fraud probability score (0-1)</li>
+                    <li>System shall support batch scoring for historical data</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4 style={{ color: '#10b981', marginBottom: '12px' }}>FR-2: Decision Management</h4>
+                  <ul style={{ fontSize: '13px', paddingLeft: '20px', lineHeight: '1.8' }}>
+                    <li>System shall support configurable decision thresholds</li>
+                    <li>System shall route high-risk cases to review queue</li>
+                    <li>System shall auto-block transactions above critical threshold</li>
+                    <li>System shall log all decisions with audit trail</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4 style={{ color: '#f59e0b', marginBottom: '12px' }}>FR-3: Model Explainability</h4>
+                  <ul style={{ fontSize: '13px', paddingLeft: '20px', lineHeight: '1.8' }}>
+                    <li>System shall provide SHAP-based feature explanations</li>
+                    <li>System shall highlight top 5 risk factors per transaction</li>
+                    <li>System shall generate human-readable risk narratives</li>
+                    <li>System shall support counterfactual explanations</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4 style={{ color: '#8b5cf6', marginBottom: '12px' }}>FR-4: Monitoring & Alerts</h4>
+                  <ul style={{ fontSize: '13px', paddingLeft: '20px', lineHeight: '1.8' }}>
+                    <li>System shall monitor model performance in real-time</li>
+                    <li>System shall detect data drift and concept drift</li>
+                    <li>System shall alert on SLA breaches within 1 minute</li>
+                    <li>System shall provide executive dashboards</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Non-Functional Requirements */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#ede9fe' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>🔧 4. Non-Functional Requirements</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#f5f3ff' }}><th>Category</th><th>Requirement</th><th>Specification</th><th>Measurement</th></tr></thead>
+                <tbody>
+                  <tr><td style={{ fontWeight: '600' }}>Performance</td><td>Response time</td><td>P95 {'<'} 100ms, P99 {'<'} 200ms</td><td>Prometheus metrics</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Performance</td><td>Throughput</td><td>{'>'} 15,000 TPS sustained</td><td>Load testing results</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Availability</td><td>Uptime SLA</td><td>99.95% (22 min/month max)</td><td>Uptime monitoring</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Scalability</td><td>Auto-scaling</td><td>Scale to 3x within 5 minutes</td><td>K8s HPA metrics</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Security</td><td>Data encryption</td><td>TLS 1.3 in transit, AES-256 at rest</td><td>Security audit</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Compliance</td><td>Regulatory</td><td>PCI-DSS, GDPR, SOX compliant</td><td>Compliance audit</td></tr>
+                  <tr><td style={{ fontWeight: '600' }}>Disaster Recovery</td><td>RTO/RPO</td><td>RTO: 4 hours, RPO: 1 hour</td><td>DR drill results</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* User Stories */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fee2e2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>👤 5. User Stories</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {[
+                  { id: 'US-01', persona: 'Fraud Analyst', story: 'I want to see real-time fraud alerts with explanations so that I can quickly investigate and act on suspicious transactions.', priority: 'Critical' },
+                  { id: 'US-02', persona: 'Risk Manager', story: 'I want to configure fraud thresholds by customer segment so that I can balance fraud prevention with customer experience.', priority: 'High' },
+                  { id: 'US-03', persona: 'Data Scientist', story: 'I want to monitor model drift and trigger retraining so that the model maintains accuracy over time.', priority: 'High' },
+                  { id: 'US-04', persona: 'Customer', story: 'I want my legitimate transactions to be approved instantly so that I have a seamless payment experience.', priority: 'Critical' },
+                  { id: 'US-05', persona: 'Compliance Officer', story: 'I want complete audit trails of all fraud decisions so that we can demonstrate regulatory compliance.', priority: 'Critical' }
+                ].map((us, i) => (
+                  <div key={i} style={{ padding: '16px', background: '#f8fafc', borderRadius: '8px', borderLeft: '4px solid #ef4444' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                      <span style={{ fontWeight: '600', color: '#991b1b' }}>{us.id}</span>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <span style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>{us.persona}</span>
+                        <span style={{ background: us.priority === 'Critical' ? '#fef2f2' : '#fef3c7', color: us.priority === 'Critical' ? '#991b1b' : '#92400e', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>{us.priority}</span>
+                      </div>
+                    </div>
+                    <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}>As a <strong>{us.persona}</strong>, {us.story}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Acceptance Criteria */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#ecfdf5' }}><h3 className="card-title" style={{ color: '#065f46' }}>✅ 6. Acceptance Criteria</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}>
+                <thead><tr style={{ background: '#f0fdf4' }}><th>Criteria ID</th><th>Description</th><th>Test Method</th><th>Status</th></tr></thead>
+                <tbody>
+                  <tr><td style={{ fontWeight: '500' }}>AC-01</td><td>System achieves {'>'} 95% fraud detection accuracy on test set</td><td>Model evaluation on holdout set</td><td><span style={{ color: '#10b981' }}>✓ Met</span></td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>AC-02</td><td>False positive rate {'<'} 3% measured over 30 days</td><td>Production monitoring</td><td><span style={{ color: '#10b981' }}>✓ Met (2.1%)</span></td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>AC-03</td><td>P95 latency {'<'} 100ms under 15K TPS load</td><td>Load testing with Locust</td><td><span style={{ color: '#10b981' }}>✓ Met (72ms)</span></td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>AC-04</td><td>System passes security penetration testing</td><td>Third-party security audit</td><td><span style={{ color: '#10b981' }}>✓ Met</span></td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>AC-05</td><td>All audit logs retained for 7 years</td><td>Compliance verification</td><td><span style={{ color: '#10b981' }}>✓ Met</span></td></tr>
+                  <tr><td style={{ fontWeight: '500' }}>AC-06</td><td>DR failover completes within 4 hours</td><td>DR drill execution</td><td><span style={{ color: '#10b981' }}>✓ Met (2.5h)</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Sign-off */}
+          <div className="card" style={{ border: '2px solid #10b981' }}>
+            <div className="card-header" style={{ background: '#dcfce7' }}><h3 className="card-title" style={{ color: '#166534' }}>✍️ 7. Approval Sign-off</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '13px' }}>
+                <thead><tr><th>Role</th><th>Name</th><th>Signature</th><th>Date</th><th>Status</th></tr></thead>
+                <tbody>
+                  <tr><td>Business Sponsor</td><td>James Wilson, SVP</td><td style={{ fontFamily: 'cursive', color: '#3b82f6' }}>J. Wilson</td><td>Jan 10, 2025</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>Approved</span></td></tr>
+                  <tr><td>Business Owner</td><td>Sarah Johnson, VP</td><td style={{ fontFamily: 'cursive', color: '#3b82f6' }}>S. Johnson</td><td>Jan 12, 2025</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>Approved</span></td></tr>
+                  <tr><td>Technical Lead</td><td>Michael Chen</td><td style={{ fontFamily: 'cursive', color: '#3b82f6' }}>M. Chen</td><td>Jan 14, 2025</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>Approved</span></td></tr>
+                  <tr><td>Compliance</td><td>Lisa Park</td><td style={{ fontFamily: 'cursive', color: '#3b82f6' }}>L. Park</td><td>Jan 15, 2025</td><td><span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '8px', fontSize: '11px' }}>Approved</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== HLD - HIGH LEVEL DESIGN ==================== */}
+      {activeTab === 'hld' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>🏛️ High-Level Design (HLD)</h2>
+              <p style={{ opacity: 0.9 }}>System architecture overview, component interactions, and technology stack</p>
+            </div>
+          </div>
+
+          {/* System Context */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#dbeafe' }}><h3 className="card-title" style={{ color: '#1e40af' }}>🌐 System Context Diagram</h3></div>
+            <div className="card-body">
+              <div style={{ padding: '16px', background: '#f8fafc', borderRadius: '8px', marginBottom: '20px' }}>
+                <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}><strong>Purpose:</strong> Shows how the Fraud Detection System interacts with external systems and users.</p>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '24px', padding: '40px', background: '#f8fafc', borderRadius: '12px', flexWrap: 'wrap' }}>
+                <div style={{ padding: '20px', background: '#dbeafe', borderRadius: '12px', textAlign: 'center', border: '2px solid #3b82f6' }}>
+                  <div style={{ fontSize: '24px', marginBottom: '8px' }}>👤</div>
+                  <div style={{ fontWeight: '600' }}>Customers</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>Card transactions</div>
+                </div>
+                <span style={{ fontSize: '24px', color: '#3b82f6' }}>→</span>
+                <div style={{ padding: '20px', background: '#fee2e2', borderRadius: '12px', textAlign: 'center', border: '2px solid #ef4444' }}>
+                  <div style={{ fontSize: '24px', marginBottom: '8px' }}>🏦</div>
+                  <div style={{ fontWeight: '600' }}>Payment Gateway</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>Transaction routing</div>
+                </div>
+                <span style={{ fontSize: '24px', color: '#3b82f6' }}>→</span>
+                <div style={{ padding: '30px 40px', background: 'linear-gradient(135deg, #1e40af, #3b82f6)', borderRadius: '16px', textAlign: 'center', color: 'white', boxShadow: '0 8px 24px rgba(59,130,246,0.3)' }}>
+                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>🤖</div>
+                  <div style={{ fontWeight: '700', fontSize: '16px' }}>Fraud Detection System</div>
+                  <div style={{ fontSize: '12px', opacity: 0.9 }}>Real-time ML scoring</div>
+                </div>
+                <span style={{ fontSize: '24px', color: '#3b82f6' }}>→</span>
+                <div style={{ padding: '20px', background: '#dcfce7', borderRadius: '12px', textAlign: 'center', border: '2px solid #10b981' }}>
+                  <div style={{ fontSize: '24px', marginBottom: '8px' }}>✅</div>
+                  <div style={{ fontWeight: '600' }}>Decision Engine</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280' }}>Allow/Block/Review</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Technology Stack */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#f0fdf4' }}><h3 className="card-title" style={{ color: '#065f46' }}>🛠️ Technology Stack</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                {[
+                  { layer: 'Frontend', tech: ['React', 'TypeScript', 'TailwindCSS'], color: '#3b82f6' },
+                  { layer: 'API Layer', tech: ['FastAPI', 'Kong Gateway', 'gRPC'], color: '#10b981' },
+                  { layer: 'ML Platform', tech: ['MLflow', 'TensorFlow', 'XGBoost'], color: '#8b5cf6' },
+                  { layer: 'Data Layer', tech: ['PostgreSQL', 'Redis', 'Kafka'], color: '#f59e0b' }
+                ].map((s, i) => (
+                  <div key={i} style={{ padding: '20px', background: '#f8fafc', borderRadius: '12px', borderTop: `4px solid ${s.color}` }}>
+                    <div style={{ fontWeight: '700', marginBottom: '12px', color: s.color }}>{s.layer}</div>
+                    {s.tech.map((t, j) => <div key={j} style={{ fontSize: '13px', padding: '4px 0', color: '#374151' }}>• {t}</div>)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Key Components */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🧩 Key Components</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Component</th><th>Responsibility</th><th>Technology</th><th>SLA</th><th>Owner</th></tr></thead><tbody>
+                <tr><td style={{ fontWeight: '600' }}>API Gateway</td><td>Request routing, rate limiting, auth</td><td>Kong + JWT</td><td>99.99%</td><td>Platform Team</td></tr>
+                <tr><td style={{ fontWeight: '600' }}>Feature Store</td><td>Real-time feature serving</td><td>Feast + Redis</td><td>99.9%</td><td>ML Platform</td></tr>
+                <tr><td style={{ fontWeight: '600' }}>Inference Service</td><td>ML model predictions</td><td>TF Serving + FastAPI</td><td>99.9%</td><td>ML Team</td></tr>
+                <tr><td style={{ fontWeight: '600' }}>Decision Engine</td><td>Business rules, thresholds</td><td>Python + Redis</td><td>99.9%</td><td>Risk Team</td></tr>
+                <tr><td style={{ fontWeight: '600' }}>Event Stream</td><td>Real-time data pipeline</td><td>Kafka + Spark</td><td>99.95%</td><td>Data Eng</td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== C4 MODEL ==================== */}
+      {activeTab === 'c4-model' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>📊 C4 Model Architecture</h2>
+              <p style={{ opacity: 0.9 }}>Context, Container, Component, Code - Four levels of architecture abstraction</p>
+            </div>
+          </div>
+
+          {/* Level Navigation */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+            {[
+              { level: 'L1: Context', desc: 'System + external actors', icon: '🌐', color: '#3b82f6' },
+              { level: 'L2: Container', desc: 'Applications + data stores', icon: '📦', color: '#10b981' },
+              { level: 'L3: Component', desc: 'Internal components', icon: '🧩', color: '#f59e0b' },
+              { level: 'L4: Code', desc: 'Classes + interfaces', icon: '💻', color: '#ef4444' }
+            ].map((l, i) => (
+              <div key={i} style={{ padding: '20px', background: 'white', borderRadius: '12px', textAlign: 'center', border: `2px solid ${l.color}`, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <div style={{ fontSize: '28px', marginBottom: '8px' }}>{l.icon}</div>
+                <div style={{ fontWeight: '700', color: l.color }}>{l.level}</div>
+                <div style={{ fontSize: '12px', color: '#6b7280' }}>{l.desc}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Container Diagram */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#dcfce7' }}><h3 className="card-title" style={{ color: '#166534' }}>📦 L2: Container Diagram</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', padding: '20px', background: '#f8fafc', borderRadius: '12px' }}>
+                {[
+                  { name: 'Web App', type: 'React SPA', port: ':3000', desc: 'Dashboard UI' },
+                  { name: 'API Server', type: 'FastAPI', port: ':8000', desc: 'REST/gRPC endpoints' },
+                  { name: 'ML Service', type: 'TF Serving', port: ':8501', desc: 'Model inference' },
+                  { name: 'Feature Service', type: 'Feast', port: ':6566', desc: 'Feature lookup' },
+                  { name: 'PostgreSQL', type: 'Database', port: ':5432', desc: 'Persistent storage' },
+                  { name: 'Redis', type: 'Cache', port: ':6379', desc: 'Feature cache' },
+                  { name: 'Kafka', type: 'Stream', port: ':9092', desc: 'Event streaming' },
+                  { name: 'Prometheus', type: 'Monitoring', port: ':9090', desc: 'Metrics collection' }
+                ].map((c, i) => (
+                  <div key={i} style={{ padding: '16px', background: 'white', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                    <div style={{ fontWeight: '600', marginBottom: '4px' }}>{c.name}</div>
+                    <div style={{ fontSize: '11px', color: '#3b82f6' }}>{c.type}</div>
+                    <div style={{ fontSize: '10px', color: '#6b7280', fontFamily: 'monospace' }}>{c.port}</div>
+                    <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>{c.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Component Diagram */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fef3c7' }}><h3 className="card-title" style={{ color: '#92400e' }}>🧩 L3: Component Diagram - API Server</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Component</th><th>Type</th><th>Interface</th><th>Dependencies</th><th>Description</th></tr></thead><tbody>
+                <tr><td style={{ fontWeight: '500' }}>PredictionController</td><td>REST Controller</td><td>POST /predict</td><td>FeatureService, ModelService</td><td>Handles prediction requests</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>FeatureService</td><td>Service</td><td>get_features()</td><td>Redis, Feast</td><td>Real-time feature lookup</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>ModelService</td><td>Service</td><td>predict()</td><td>TF Serving gRPC</td><td>ML model inference</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>DecisionEngine</td><td>Service</td><td>decide()</td><td>Rules DB</td><td>Apply business rules</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>AuditLogger</td><td>Component</td><td>log()</td><td>Kafka</td><td>Audit trail logging</td></tr>
+              </tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== ADR - ARCHITECTURE DECISION RECORDS ==================== */}
+      {activeTab === 'adr' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>📝 Architecture Decision Records (ADR)</h2>
+              <p style={{ opacity: 0.9 }}>Documented architectural decisions with context, rationale, and consequences</p>
+            </div>
+          </div>
+
+          {/* ADR List */}
+          {[
+            { id: 'ADR-001', title: 'Use XGBoost + Neural Network Ensemble', status: 'Accepted', date: 'Jan 2024', context: 'Need high accuracy fraud detection with interpretability', decision: 'Combine XGBoost for feature importance with DNN for pattern recognition', consequences: ['95%+ accuracy achieved', 'Interpretable feature weights', 'Higher inference cost'] },
+            { id: 'ADR-002', title: 'Redis for Real-Time Feature Store', status: 'Accepted', date: 'Feb 2024', context: 'Feature lookup must be < 10ms for real-time scoring', decision: 'Use Redis cluster with Feast for feature serving', consequences: ['5ms average lookup', '$12K/month infrastructure cost', 'Need Redis expertise'] },
+            { id: 'ADR-003', title: 'Kafka for Event Streaming', status: 'Accepted', date: 'Feb 2024', context: 'Need reliable, ordered event processing at 10K+ TPS', decision: 'Apache Kafka with exactly-once semantics', consequences: ['Zero message loss', 'Complex operations', 'Kafka team required'] },
+            { id: 'ADR-004', title: 'FastAPI over Flask for API Layer', status: 'Accepted', date: 'Mar 2024', context: 'Need async support and auto-generated OpenAPI docs', decision: 'FastAPI with Pydantic validation', consequences: ['40% faster than Flask', 'Auto API docs', 'Team learning curve'] }
+          ].map((adr, i) => (
+            <div key={i} className="card" style={{ border: '2px solid #10b981' }}>
+              <div className="card-header" style={{ background: '#f0fdf4' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 className="card-title" style={{ color: '#065f46' }}>{adr.id}: {adr.title}</h3>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <span style={{ background: '#dcfce7', color: '#166534', padding: '4px 12px', borderRadius: '12px', fontSize: '11px', fontWeight: '600' }}>{adr.status}</span>
+                    <span style={{ color: '#6b7280', fontSize: '12px' }}>{adr.date}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="card-body">
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
+                  <div style={{ padding: '16px', background: '#eff6ff', borderRadius: '8px' }}>
+                    <div style={{ fontWeight: '600', color: '#1e40af', marginBottom: '8px' }}>📋 Context</div>
+                    <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}>{adr.context}</p>
+                  </div>
+                  <div style={{ padding: '16px', background: '#f0fdf4', borderRadius: '8px' }}>
+                    <div style={{ fontWeight: '600', color: '#065f46', marginBottom: '8px' }}>✅ Decision</div>
+                    <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}>{adr.decision}</p>
+                  </div>
+                  <div style={{ padding: '16px', background: '#fef3c7', borderRadius: '8px' }}>
+                    <div style={{ fontWeight: '600', color: '#92400e', marginBottom: '8px' }}>⚖️ Consequences</div>
+                    <ul style={{ fontSize: '12px', color: '#374151', margin: 0, paddingLeft: '16px' }}>
+                      {adr.consequences.map((c, j) => <li key={j}>{c}</li>)}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ==================== SYSTEM ARCHITECTURE ==================== */}
+      {activeTab === 'system-arch' && (
+        <div className="grid grid-cols-1" style={{ gap: '24px' }}>
+          <div className="card" style={{ background: 'linear-gradient(135deg, #0891b2 0%, #0e7490 100%)', color: 'white' }}>
+            <div className="card-body" style={{ padding: '24px' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'white' }}>🖥️ System Architecture</h2>
+              <p style={{ opacity: 0.9 }}>Infrastructure, deployment, and system topology diagrams</p>
+            </div>
+          </div>
+
+          {/* Infrastructure Overview */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#ecfeff' }}><h3 className="card-title" style={{ color: '#0e7490' }}>☁️ Cloud Infrastructure (AWS)</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px' }}>
+                <div style={{ padding: '20px', background: '#f8fafc', borderRadius: '12px', border: '2px solid #0891b2' }}>
+                  <h4 style={{ color: '#0891b2', marginBottom: '12px' }}>🌐 Networking</h4>
+                  <ul style={{ fontSize: '12px', paddingLeft: '16px', margin: 0 }}>
+                    <li>VPC: 10.0.0.0/16</li>
+                    <li>3 Availability Zones</li>
+                    <li>Private + Public subnets</li>
+                    <li>NAT Gateway for egress</li>
+                    <li>ALB for load balancing</li>
+                  </ul>
+                </div>
+                <div style={{ padding: '20px', background: '#f8fafc', borderRadius: '12px', border: '2px solid #10b981' }}>
+                  <h4 style={{ color: '#10b981', marginBottom: '12px' }}>🖥️ Compute</h4>
+                  <ul style={{ fontSize: '12px', paddingLeft: '16px', margin: 0 }}>
+                    <li>EKS: v1.28 (3 node groups)</li>
+                    <li>API: 4x m6i.xlarge</li>
+                    <li>ML: 8x g4dn.xlarge (GPU)</li>
+                    <li>Auto-scaling: 2-20 nodes</li>
+                    <li>Spot instances: 30%</li>
+                  </ul>
+                </div>
+                <div style={{ padding: '20px', background: '#f8fafc', borderRadius: '12px', border: '2px solid #f59e0b' }}>
+                  <h4 style={{ color: '#f59e0b', marginBottom: '12px' }}>💾 Storage</h4>
+                  <ul style={{ fontSize: '12px', paddingLeft: '16px', margin: 0 }}>
+                    <li>RDS PostgreSQL: db.r6g.2xl</li>
+                    <li>ElastiCache Redis: r6g.xl</li>
+                    <li>S3: Model artifacts, logs</li>
+                    <li>EBS: gp3 volumes</li>
+                    <li>Backup: Daily snapshots</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Deployment Topology */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#f5f3ff' }}><h3 className="card-title" style={{ color: '#5b21b6' }}>🚀 Kubernetes Deployment Topology</h3></div>
+            <div className="card-body">
+              <table className="table" style={{ fontSize: '12px' }}><thead><tr><th>Service</th><th>Replicas</th><th>CPU Request</th><th>Memory</th><th>HPA Min/Max</th><th>Node Pool</th></tr></thead><tbody>
+                <tr><td style={{ fontWeight: '500' }}>api-gateway</td><td>4</td><td>500m</td><td>1Gi</td><td>4/12</td><td>general</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>feature-service</td><td>6</td><td>1000m</td><td>2Gi</td><td>6/20</td><td>general</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>ml-inference</td><td>8</td><td>2000m</td><td>8Gi</td><td>8/24</td><td>gpu</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>decision-engine</td><td>4</td><td>500m</td><td>1Gi</td><td>4/12</td><td>general</td></tr>
+                <tr><td style={{ fontWeight: '500' }}>kafka-consumer</td><td>6</td><td>1000m</td><td>2Gi</td><td>6/18</td><td>general</td></tr>
+              </tbody></table>
+            </div>
+          </div>
+
+          {/* Network Flow */}
+          <div className="card">
+            <div className="card-header" style={{ background: '#fee2e2' }}><h3 className="card-title" style={{ color: '#991b1b' }}>🔒 Security & Network Flow</h3></div>
+            <div className="card-body">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', padding: '20px', background: '#f8fafc', borderRadius: '12px' }}>
+                {[
+                  { name: 'Internet', icon: '🌐' },
+                  { name: 'WAF', icon: '🛡️' },
+                  { name: 'CloudFront', icon: '☁️' },
+                  { name: 'ALB', icon: '⚖️' },
+                  { name: 'Kong Gateway', icon: '🚪' },
+                  { name: 'Service Mesh', icon: '🕸️' },
+                  { name: 'Pods', icon: '📦' }
+                ].map((n, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ padding: '12px 16px', background: '#ef4444', color: 'white', borderRadius: '8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '18px' }}>{n.icon}</div>
+                      <div style={{ fontSize: '10px', fontWeight: '500' }}>{n.name}</div>
+                    </div>
+                    {i < 6 && <span style={{ color: '#ef4444', fontSize: '18px' }}>→</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* B2B/B2C/B2E Scenarios Tab */}
+      {activeTab === 'scenarios' && (() => {
+        // Resolve the pipeline UC for scenario view
+        const scenarioUc = pipelineUc || (useCase && ucById[useCase.id]) || null;
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div className="card">
+              <div className="card-header" style={{ background: 'linear-gradient(135deg, #3b82f6, #10b981)', padding: '16px 24px' }}>
+                <div>
+                  <h3 className="card-title" style={{ color: 'white', fontSize: '16px', fontWeight: '700' }}>Business Scenarios: B2B / B2C / B2E</h3>
+                  <p className="card-subtitle" style={{ color: 'rgba(255,255,255,0.8)', fontSize: '12px' }}>Explore how this use case applies across business, consumer, and employee contexts</p>
+                </div>
+              </div>
+              <div className="card-body" style={{ padding: '24px' }}>
+                <ScenarioView useCase={scenarioUc} />
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

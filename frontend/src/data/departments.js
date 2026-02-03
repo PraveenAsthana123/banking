@@ -374,3 +374,61 @@ export const getStatusLabel = (status) => {
     default: return 'Unknown';
   }
 };
+
+// Pipeline UC ID mapping: maps department use case IDs to pipeline UC IDs
+export const pipelineUcMapping = {
+  // Risk Management
+  'credit-risk-scoring': 'UC-CR-01',
+  'market-risk-var': 'UC-MR-02',
+  'operational-risk': 'UC-OR-01',
+  'interest-rate-risk': 'UC-ER-02',
+  // Credit Analysis
+  'loan-approval': 'UC-CR-01',
+  'default-prediction': 'UC-CR-02',
+  'credit-scoring': 'UC-CR-01',
+  // Fraud Detection
+  'transaction-fraud': 'UC-FR-01',
+  'card-fraud': 'UC-FR-02',
+  'identity-fraud': 'UC-FR-03',
+  'aml-detection': 'UC-AML-01',
+  // Customer Analytics
+  'churn-prediction': 'UC-CX-01',
+  'next-best-action': 'UC-CX-02',
+  'clv-prediction': 'UC-CRM-03',
+  'segmentation': 'UC-MKT-01',
+  'sentiment-analysis': 'UC-MR-03',
+  // Compliance
+  'kyc-verification': 'UC-AML-01',
+  'fair-lending': 'UC-CX-05',
+  'regulatory-reporting': 'UC-RC-02',
+  // Treasury
+  'cash-forecasting': 'UC-COR-03',
+  'fx-prediction': 'UC-MR-02',
+  // Retail Banking
+  'deposit-prediction': 'UC-RBK-02',
+  'pricing-optimization': 'UC-RBK-03',
+  'account-opening': 'UC-RBK-01',
+  // Digital Banking
+  'digital-onboarding': 'UC-DIG-01',
+  'chatbot-intent': 'UC-DB-01',
+  'voice-banking': 'UC-DB-03',
+  // Operations
+  'process-automation': 'UC-PA-01',
+  'workflow-optimization': 'UC-PO-01',
+  'document-processing': 'UC-DOC-03',
+  // HR
+  'attrition-prediction': 'UC-TM-02',
+  'talent-acquisition': 'UC-TM-01',
+  'performance-prediction': 'UC-TM-03',
+  // Investment Banking
+  'portfolio-optimization': 'UC-31-01',
+  'stock-prediction': 'UC-MR-03',
+  // Insurance
+  'claims-prediction': 'UC-COL-01',
+  'underwriting-automation': 'UC-CR-04',
+  // Payments
+  'payment-fraud': 'UC-PP-01',
+  'transaction-routing': 'UC-PP-02',
+  // ESG / Asset Management
+  'esg-scoring': 'UC-ESG-01',
+};

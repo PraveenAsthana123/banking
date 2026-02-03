@@ -4,6 +4,7 @@ import { Icon } from '../components/Icons';
 import { departments } from '../data/departments';
 import { useRole } from '../context/RoleContext';
 import { roleDashboards } from '../components/RoleDashboards';
+import ScenarioDashboard from '../components/ScenarioDashboard';
 import {
   AreaChart,
   Area,
@@ -359,6 +360,11 @@ const Dashboard = () => {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* B2B/B2C/B2E Coverage Widget */}
+      <div style={{ marginTop: '24px' }}>
+        <ScenarioDashboard compact={true} />
       </div>
 
       {/* Recent Pipelines */}
