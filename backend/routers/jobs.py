@@ -8,8 +8,10 @@ from fastapi import APIRouter, Depends
 
 from backend.core.config import Settings
 from backend.core.dependencies import get_job_repo, get_audit_repo, get_settings
+from backend.core.utils import sanitize_table_name
 from backend.repositories.audit_repo import AuditRepo
 from backend.repositories.job_repo import JobRepo
+from backend.schemas.common import SuccessResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/jobs", tags=["jobs"])
@@ -21,7 +23,7 @@ def list_jobs(repo: JobRepo = Depends(get_job_repo)):
     return repo.list_all()
 
 
-@router.post("/{job_id}/cancel")
+@router.post("/{job_id}/cancel", response_model=SuccessResponse)
 def cancel_job(
     job_id: int,
     repo: JobRepo = Depends(get_job_repo),
@@ -30,7 +32,7 @@ def cancel_job(
     """Cancel a running job."""
     repo.cancel(job_id)
     audit.log("job_cancelled", f"Job {job_id} cancelled", entry_type="modify")
-    return {"success": True, "message": f"Job {job_id} cancelled"}
+    return SuccessResponse(message=f"Job {job_id} cancelled")
 
 
 @router.get("/vectordb")
@@ -62,7 +64,10 @@ def vector_db_stats(settings: Settings = Depends(get_settings)):
             tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             for (tbl,) in tables:
                 if "collection" in tbl.lower():
-                    rows = conn.execute(f'SELECT * FROM "{tbl}" LIMIT 20').fetchall()
+                    safe_tbl = sanitize_table_name(tbl)
+                    if not safe_tbl:
+                        continue
+                    rows = conn.execute(f'SELECT * FROM "{safe_tbl}" LIMIT 20').fetchall()
                     for r in rows:
                         chroma_collections.append({"table": tbl, "data": list(r)})
             conn.close()

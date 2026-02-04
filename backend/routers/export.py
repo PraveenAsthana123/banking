@@ -11,11 +11,11 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from backend.core.config import Settings
 from backend.core.dependencies import get_settings
 from backend.core.exceptions import NotFoundError, DataError, ValidationError
+from backend.schemas.export import BatchExportRequest
 
 logger = logging.getLogger(__name__)
 
@@ -745,13 +745,6 @@ def _build_executive_summary_pdf(preprocess_dir: Path) -> bytes:
     pdf.cell(0, 4, f"Banking AI/ML Platform  |  Executive Summary  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  Confidential", align="C", ln=True)
 
     return pdf.output()
-
-
-# ── Pydantic models ──────────────────────────────────────────────────────────
-
-class BatchExportRequest(BaseModel):
-    uc_ids: List[str]
-    format: str = "pdf"  # "pdf" or "excel"
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────

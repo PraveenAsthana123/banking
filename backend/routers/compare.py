@@ -2,16 +2,15 @@
 
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
 
 from backend.core.config import Settings
 from backend.core.dependencies import get_settings
 from backend.core.exceptions import NotFoundError, ValidationError
+from backend.schemas.compare import SideBySideRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/compare", tags=["compare"])
@@ -377,12 +376,6 @@ def _compute_business_case(summary: Dict[str, Any], training: Optional[Dict[str,
             else "Needs review"
         ),
     }
-
-
-# ── Pydantic models ────────────────────────────────────────────────────────
-
-class SideBySideRequest(BaseModel):
-    uc_ids: List[str]
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────

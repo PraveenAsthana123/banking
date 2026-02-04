@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import shutil
 import subprocess
 import threading
 from datetime import datetime
@@ -11,43 +10,36 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form
-from pydantic import BaseModel
 
-from backend.core.config import Settings, get_settings as _cfg
+from backend.core.config import Settings
 from backend.core.dependencies import get_settings, get_job_repo, get_audit_repo
 from backend.core.exceptions import NotFoundError, ValidationError, DataError
 from backend.core.utils import validate_use_case_key
 from backend.repositories.audit_repo import AuditRepo
 from backend.repositories.job_repo import JobRepo
+from backend.schemas.process import ProcessRunRequest, ProcessRunResponse
+from backend.schemas.common import SuccessResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/process", tags=["process"])
 
 
-# Build preprocessing map dynamically at import time
 def _build_preprocess_map(settings: Settings) -> dict:
     """Scan preprocessing_output/ and build UC ID -> directory mapping."""
-    mapping = {}
+    mapping: dict = {}
     output_dir = settings.output_dir
     if not output_dir.exists():
         return mapping
     for d in output_dir.iterdir():
         if not d.is_dir() or not d.name.startswith("uc_"):
             continue
-        # Extract prefix: uc_fr_01_fraud_scoring -> uc_fr_01
         parts = d.name.split("_")
         if len(parts) >= 3:
-            # Reconstruct UC ID: uc_fr_01 -> UC-FR-01
             uc_prefix = f"UC-{parts[1].upper()}-{parts[2].upper()}"
             mapping[uc_prefix] = d.name
-            # Also map numeric-only: uc_06_01 -> UC-06-01
             if parts[1].isdigit():
                 mapping[f"UC-{parts[1]}-{parts[2]}"] = d.name
     return mapping
-
-
-UC_PREPROCESS_MAP = _build_preprocess_map(_cfg())
-logger.info("Loaded %d preprocessing output mappings", len(UC_PREPROCESS_MAP))
 
 
 def _list_files(directory: Path, extensions: set = None) -> list:
@@ -123,7 +115,8 @@ def _find_uc_data_dir(uc_id: str, uc_path: str = "", *, settings: Settings) -> d
 
     # 3. Find preprocessing output directory
     # Try exact map first
-    preprocess_name = UC_PREPROCESS_MAP.get(uc_id)
+    preprocess_map = _build_preprocess_map(settings)
+    preprocess_name = preprocess_map.get(uc_id)
     if preprocess_name:
         preprocess_dir = output_dir / preprocess_name
         if preprocess_dir.exists():
@@ -223,13 +216,6 @@ async def upload_to_uc(
     }
 
 
-class ProcessRunRequest(BaseModel):
-    uc_id: str
-    uc_path: str = ""
-    pipeline_type: str = "full"  # full, preprocessing, training, scoring
-    data_file: str = ""  # specific file to process
-
-
 def _run_pipeline_bg(
     job_id: int,
     req: ProcessRunRequest,
@@ -312,7 +298,7 @@ def _run_pipeline_bg(
         audit_repo.log("pipeline_failed", f"Pipeline failed for {req.uc_id}: {e}", entry_type="error")
 
 
-@router.post("/run")
+@router.post("/run", response_model=ProcessRunResponse)
 def run_process(
     req: ProcessRunRequest,
     repo: JobRepo = Depends(get_job_repo),

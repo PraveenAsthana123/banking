@@ -4,16 +4,16 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
 
 from backend.core.config import Settings
 from backend.core.dependencies import get_alert_repo, get_audit_repo, get_settings
 from backend.core.exceptions import ValidationError
 from backend.repositories.alert_repo import AlertRepo
 from backend.repositories.audit_repo import AuditRepo
+from backend.schemas.alerts import AlertCreate, AlertUpdate, AlertCreateResponse, AlertCheckResponse
+from backend.schemas.common import SuccessResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/alerts", tags=["alerts"])
@@ -33,27 +33,6 @@ VALID_OPERATORS = {">", "<", "=", ">=", "<=", "!="}
 VALID_SEVERITIES = {"critical", "warning", "info"}
 
 
-# ── Pydantic models ──────────────────────────────────────────────────────────
-
-class AlertCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
-    metric: str
-    threshold: float
-    operator: str = ">"
-    uc_id: str = "all"
-    severity: str = "warning"
-
-
-class AlertUpdate(BaseModel):
-    name: Optional[str] = None
-    metric: Optional[str] = None
-    threshold: Optional[float] = None
-    operator: Optional[str] = None
-    uc_id: Optional[str] = None
-    severity: Optional[str] = None
-    enabled: Optional[int] = None
-
-
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("")
@@ -62,7 +41,7 @@ def list_alerts(repo: AlertRepo = Depends(get_alert_repo)):
     return repo.list_all()
 
 
-@router.post("")
+@router.post("", response_model=AlertCreateResponse)
 def create_alert(
     body: AlertCreate,
     repo: AlertRepo = Depends(get_alert_repo),
@@ -81,7 +60,7 @@ def create_alert(
     return {"id": alert_id, "message": "Alert created successfully"}
 
 
-@router.put("/{alert_id}")
+@router.put("/{alert_id}", response_model=SuccessResponse)
 def update_alert(
     alert_id: int,
     body: AlertUpdate,
@@ -99,10 +78,10 @@ def update_alert(
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     repo.update(alert_id, **fields)
     audit.log("alert_updated", f"Alert id={alert_id} updated: {list(fields.keys())}")
-    return {"message": f"Alert {alert_id} updated successfully"}
+    return SuccessResponse(message=f"Alert {alert_id} updated successfully")
 
 
-@router.delete("/{alert_id}")
+@router.delete("/{alert_id}", response_model=SuccessResponse)
 def delete_alert(
     alert_id: int,
     repo: AlertRepo = Depends(get_alert_repo),
@@ -111,7 +90,7 @@ def delete_alert(
     """Delete an alert rule."""
     repo.delete(alert_id)
     audit.log("alert_deleted", f"Alert id={alert_id} deleted")
-    return {"message": f"Alert {alert_id} deleted successfully"}
+    return SuccessResponse(message=f"Alert {alert_id} deleted successfully")
 
 
 @router.post("/check")

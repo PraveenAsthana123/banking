@@ -13,6 +13,7 @@ from backend.core.dependencies import get_dataset_repo, get_audit_repo, get_sett
 from backend.core.exceptions import DataError, ValidationError
 from backend.repositories.audit_repo import AuditRepo
 from backend.repositories.dataset_repo import DatasetRepo
+from backend.schemas.common import SuccessResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["upload"])
@@ -106,7 +107,7 @@ def get_dataset(dataset_id: int, repo: DatasetRepo = Depends(get_dataset_repo)):
     return repo.find_by_id(dataset_id)
 
 
-@router.delete("/datasets/{dataset_id}")
+@router.delete("/datasets/{dataset_id}", response_model=SuccessResponse)
 def delete_dataset(
     dataset_id: int,
     repo: DatasetRepo = Depends(get_dataset_repo),
@@ -115,4 +116,4 @@ def delete_dataset(
     """Remove dataset and its file."""
     info = repo.delete(dataset_id)
     audit.log("dataset_deleted", f"Deleted dataset '{info['name']}' (id={dataset_id})", entry_type="delete")
-    return {"success": True, "message": f"Dataset {dataset_id} deleted"}
+    return SuccessResponse(message=f"Dataset {dataset_id} deleted")

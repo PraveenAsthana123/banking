@@ -3,21 +3,17 @@
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
 from backend.core.dependencies import get_integration_repo, get_audit_repo
 from backend.repositories.audit_repo import AuditRepo
 from backend.repositories.integration_repo import IntegrationRepo
+from backend.schemas.common import SuccessResponse
+from backend.schemas.integrations import IntegrationConfig, IntegrationTestResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/integrations", tags=["integrations"])
-
-
-class IntegrationConfig(BaseModel):
-    config: Dict[str, Any] = {}
 
 
 @router.get("")
@@ -26,7 +22,7 @@ def list_integrations(repo: IntegrationRepo = Depends(get_integration_repo)):
     return repo.list_all()
 
 
-@router.post("")
+@router.post("", response_model=SuccessResponse)
 def save_integration(
     integration_id: str,
     body: IntegrationConfig,
@@ -36,10 +32,10 @@ def save_integration(
     """Save/update integration configuration."""
     repo.upsert(integration_id, body.config)
     audit.log("integration_configured", f"Config saved for {integration_id}", entry_type="modify")
-    return {"success": True, "message": f"Configuration saved for {integration_id}"}
+    return SuccessResponse(message=f"Configuration saved for {integration_id}")
 
 
-@router.post("/{integration_id}/test")
+@router.post("/{integration_id}/test", response_model=IntegrationTestResponse)
 def test_connection(
     integration_id: str,
     repo: IntegrationRepo = Depends(get_integration_repo),

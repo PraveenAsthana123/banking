@@ -3,30 +3,21 @@
 import json
 import logging
 import threading
-from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
 from backend.core.dependencies import get_job_repo, get_audit_repo, get_training_service
 from backend.core.exceptions import NotFoundError, ValidationError
 from backend.repositories.audit_repo import AuditRepo
 from backend.repositories.job_repo import JobRepo
+from backend.schemas.training import TrainingRequest, TrainingStartResponse
 from backend.services.training_service import TrainingService, ALGO_MAP
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/training", tags=["training"])
 
 
-class TrainingRequest(BaseModel):
-    dataset_id: int
-    target_column: str
-    algorithm: str = "random_forest"
-    test_size: float = 0.2
-    hyperparams: Dict[str, Any] = {}
-
-
-@router.post("/start")
+@router.post("/start", response_model=TrainingStartResponse)
 def start_training(
     req: TrainingRequest,
     repo: JobRepo = Depends(get_job_repo),

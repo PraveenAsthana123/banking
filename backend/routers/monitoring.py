@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 
 from backend.core.config import Settings
 from backend.core.dependencies import get_settings
-from backend.core.utils import human_size
+from backend.core.utils import human_size, sanitize_table_name
 from backend.services.system_monitor import get_system_metrics
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,11 @@ def database_status(settings: Settings = Depends(get_settings)):
                 tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 entry["tables"] = []
                 for (tbl,) in tables:
+                    safe_tbl = sanitize_table_name(tbl)
+                    if not safe_tbl:
+                        continue
                     try:
-                        count = conn.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()[0]
+                        count = conn.execute(f'SELECT COUNT(*) FROM "{safe_tbl}"').fetchone()[0]
                     except Exception:
                         count = -1
                     entry["tables"].append({"name": tbl, "rows": count})

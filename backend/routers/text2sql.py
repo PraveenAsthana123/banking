@@ -6,27 +6,20 @@ import sqlite3
 import time
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
 from backend.core.config import Settings
 from backend.core.dependencies import get_text2sql_repo, get_audit_repo, get_settings, get_ollama_service
 from backend.core.exceptions import DataError, NotFoundError, ValidationError
+from backend.core.utils import sanitize_table_name
 from backend.repositories.audit_repo import AuditRepo
 from backend.repositories.text2sql_repo import Text2SqlRepo
+from backend.schemas.text2sql import GenerateRequest, ExecuteRequest
 from backend.services.ollama_service import OllamaService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/text2sql", tags=["text2sql"])
 
 QUERY_TIMEOUT = 30
-
-
-class GenerateRequest(BaseModel):
-    natural_language: str
-
-
-class ExecuteRequest(BaseModel):
-    sql: str
 
 
 @router.get("/schema")
@@ -40,15 +33,18 @@ def get_schema(settings: Settings = Depends(get_settings)):
         conn = sqlite3.connect(str(settings.unified_db))
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         for (tbl_name,) in cursor.fetchall():
+            safe_tbl = sanitize_table_name(tbl_name)
+            if not safe_tbl:
+                continue
             columns = []
-            for col in conn.execute(f'PRAGMA table_info("{tbl_name}")').fetchall():
+            for col in conn.execute(f'PRAGMA table_info("{safe_tbl}")').fetchall():
                 columns.append({
                     "cid": col[0], "name": col[1], "type": col[2],
                     "notnull": bool(col[3]), "pk": bool(col[5]),
                 })
             row_count = 0
             try:
-                row_count = conn.execute(f'SELECT COUNT(*) FROM "{tbl_name}"').fetchone()[0]
+                row_count = conn.execute(f'SELECT COUNT(*) FROM "{safe_tbl}"').fetchone()[0]
             except Exception:
                 pass
             tables.append({"table": tbl_name, "columns": columns, "rows": row_count})

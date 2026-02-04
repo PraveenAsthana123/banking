@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from backend.core.config import Settings
 from backend.core.dependencies import get_settings
 from backend.core.exceptions import DataError
+from backend.core.utils import sanitize_table_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/metrics", tags=["metrics"])
@@ -29,10 +30,14 @@ def get_metrics(use_case: Optional[str] = Query(None), settings: Settings = Depe
         result = {"tables": tables, "metrics": []}
 
         for tbl in tables:
+            safe_tbl = sanitize_table_name(tbl)
+            if not safe_tbl:
+                continue
             try:
-                query = f'SELECT * FROM "{tbl}"'
-                params = []
-                if use_case and "use_case" in [c[1] for c in conn.execute(f'PRAGMA table_info("{tbl}")').fetchall()]:
+                query = f'SELECT * FROM "{safe_tbl}"'
+                params: list = []
+                col_names = [c[1] for c in conn.execute(f'PRAGMA table_info("{safe_tbl}")').fetchall()]
+                if use_case and "use_case_key" in col_names:
                     query += " WHERE use_case_key = ?"
                     params = [use_case]
                 query += " ORDER BY rowid DESC LIMIT 50"
@@ -64,8 +69,11 @@ def get_preprocessing_metrics(settings: Settings = Depends(get_settings)):
 
         result = {"tables": tables, "metrics": []}
         for tbl in tables:
+            safe_tbl = sanitize_table_name(tbl)
+            if not safe_tbl:
+                continue
             try:
-                rows = conn.execute(f'SELECT * FROM "{tbl}" ORDER BY rowid DESC LIMIT 50').fetchall()
+                rows = conn.execute(f'SELECT * FROM "{safe_tbl}" ORDER BY rowid DESC LIMIT 50').fetchall()
                 result["metrics"].append({
                     "table": tbl,
                     "count": len(rows),
