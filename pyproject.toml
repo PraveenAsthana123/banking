@@ -1,0 +1,44 @@
+[project]
+name = "banking-ml-platform"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "S", "B", "A", "C4", "SIM"]
+ignore = [
+    "S101",   # assert used in tests
+    "S603",   # subprocess without shell=True (validated elsewhere)
+    "S607",   # partial executable path
+    "S608",   # SQL injection (we use sanitize_table_name)
+    "B008",   # function call in default arg (Depends())
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/*" = ["S101", "S106"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+exclude = ["backend/tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+addopts = "-p no:launch_testing_ros --strict-markers --tb=short"
+pythonpath = ["."]

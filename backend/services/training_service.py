@@ -81,8 +81,8 @@ class TrainingService:
             if hasattr(model, "predict_proba"):
                 try:
                     y_proba = model.predict_proba(X_test)
-                except Exception:
-                    pass
+                except (ValueError, AttributeError) as e:
+                    logger.warning("predict_proba failed for job %d: %s", job_id, e)
 
             acc = float(accuracy_score(y_test, y_pred))
             prec = float(precision_score(y_test, y_pred, average="weighted", zero_division=0))
@@ -95,8 +95,8 @@ class TrainingService:
             if y_proba is not None and len(np.unique(y_test)) == 2:
                 try:
                     auc = float(roc_auc_score(y_test, y_proba[:, 1]))
-                except Exception:
-                    pass
+                except (ValueError, IndexError) as e:
+                    logger.warning("AUC-ROC calculation failed for job %d: %s", job_id, e)
 
             feature_importance: Dict[str, float] = {}
             if hasattr(model, "feature_importances_"):

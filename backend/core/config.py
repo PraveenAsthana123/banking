@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO")
 
+    # Rate limiting
+    rate_limit: int = Field(default=100, description="Admin API requests per minute per IP")
+
     # CORS
     cors_origins: List[str] = Field(
         default=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://127.0.0.1:3000"]

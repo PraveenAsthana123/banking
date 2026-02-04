@@ -57,7 +57,7 @@ app = FastAPI(title="Banking ML Admin API", version="1.0.0", lifespan=lifespan)
 # Middleware stack (order matters: outermost first)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=settings.rate_limit)
 app.add_middleware(ApiKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,

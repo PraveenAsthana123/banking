@@ -80,8 +80,8 @@ class ModelService:
                 proba = model.predict_proba(df)[0]
                 result["probabilities"] = [float(p) for p in proba]
                 result["score"] = float(max(proba))
-            except Exception:
-                pass
+            except (ValueError, AttributeError) as e:
+                logger.warning("predict_proba failed for model %s: %s", model_path, e)
 
         try:
             import shap
@@ -126,16 +126,16 @@ class ModelService:
                 probas = model.predict_proba(df_numeric)
                 result["mean_probability"] = [float(p) for p in probas.mean(axis=0)]
                 result["score_distribution"] = np.histogram(probas.max(axis=1), bins=20)[0].tolist()
-            except Exception:
-                pass
+            except (ValueError, AttributeError) as e:
+                logger.warning("Batch predict_proba failed for model %s: %s", model_path, e)
 
         if y_true is not None:
             from sklearn.metrics import accuracy_score, f1_score
             try:
                 result["accuracy"] = float(accuracy_score(y_true, predictions))
                 result["f1"] = float(f1_score(y_true, predictions, average="weighted", zero_division=0))
-            except Exception:
-                pass
+            except (ValueError, TypeError) as e:
+                logger.warning("Metric computation failed: %s", e)
 
         return result
 

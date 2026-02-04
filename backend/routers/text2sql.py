@@ -45,8 +45,8 @@ def get_schema(settings: Settings = Depends(get_settings)):
             row_count = 0
             try:
                 row_count = conn.execute(f'SELECT COUNT(*) FROM "{safe_tbl}"').fetchone()[0]
-            except Exception:
-                pass
+            except sqlite3.OperationalError as e:
+                logger.warning("Could not count rows for table %s: %s", safe_tbl, e)
             tables.append({"table": tbl_name, "columns": columns, "rows": row_count})
         conn.close()
     except Exception as e:

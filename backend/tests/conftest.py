@@ -44,6 +44,8 @@ def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.delenv("BANKING_API_KEY", raising=False)
     # Remove encryption key so it doesn't leak between tests
     monkeypatch.delenv("BANKING_ENCRYPTION_KEY", raising=False)
+    # Disable rate limiting in tests
+    monkeypatch.setenv("BANKING_RATE_LIMIT", "10000")
 
     # Create necessary subdirectories
     (tmp_path / "uploads").mkdir(exist_ok=True)
